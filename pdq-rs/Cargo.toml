@@ -1,0 +1,16 @@
+[package]
+name = "pdq"
+version = "0.0.1-alpha"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/erichutchins/pdq"
+
+[lib]
+name = "pdq"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.25", features = ["extension-module"] }
+
+[package.metadata.maturin]
+name = "pdq"

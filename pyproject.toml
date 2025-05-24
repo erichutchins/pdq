@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling", "maturin>=1.4"]
+build-backend = "maturin"
+
+[project]
+name = "pdq"
+version = "0.1.0-alpha"
+description = "Coming soon! Pretty darn quick Parquet side index using FST"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.maturin]
+bindings = "pyo3"
+module-name = "pdq"
+manifest-path = "pdq-rs/Cargo.toml"
+
+[dependency-groups]
+dev = ["hatch>=1.14.1", "maturin>=1.8.6", "ruff>=0.11.11"]
