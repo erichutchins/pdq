@@ -4,6 +4,7 @@ pub mod query;
 pub mod search;
 
 use anyhow::Result;
+pub use provider::PdqTableProviderBuilder;
 
 #[derive(Debug, Clone)]
 pub struct SearchResult {

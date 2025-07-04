@@ -1,9 +1,15 @@
-use clap::{Arg, Command};
-use pdq::{index::Indexer, search::Searcher};
-use std::path::Path;
-use std::time::Instant;
-
 use anyhow::Result;
+use arrow::csv::WriterBuilder;
+use arrow::json::LineDelimitedWriter;
+use arrow::record_batch::RecordBatch;
+use clap::{Arg, Command};
+use datafusion::{arrow::util::pretty, prelude::*};
+use pdq::{index::Indexer, search::Searcher, PdqTableProviderBuilder};
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Instant;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -99,11 +105,18 @@ async fn main() -> Result<()> {
                         .required(true),
                 )
                 .arg(
+                    Arg::new("format")
+                        .long("format")
+                        .value_name("FORMAT")
+                        .help("Output format: csv, json, jsonl, table, or ndjson")
+                        .default_value("table"),
+                )
+                .arg(
                     Arg::new("output")
                         .long("output")
-                        .value_name("FORMAT")
-                        .help("Output format: csv, json, jsonl, or ndjson")
-                        .default_value("jsonl"),
+                        .value_name("FILE")
+                        .help("Write output to file instead of stdout")
+                        .required(false),
                 ),
         )
         .get_matches();
@@ -159,7 +172,8 @@ async fn main() -> Result<()> {
             let term = sub_matches.get_one::<String>("term").unwrap();
             let index_dir = sub_matches.get_one::<String>("index-dir").unwrap();
             let data_path = sub_matches.get_one::<String>("data-path").unwrap();
-            let output_format = sub_matches.get_one::<String>("output").unwrap();
+            let output_format = sub_matches.get_one::<String>("format").unwrap();
+            let output_file = sub_matches.get_one::<String>("output");
 
             println!("🔍 PDQ Query Starting...");
             println!("   Term: '{term}' in column '{column}'");
@@ -175,7 +189,7 @@ async fn main() -> Result<()> {
             if index_results.is_empty() {
                 let query_time = start_time.elapsed();
                 println!("⚡ ZERO-MATCH OPTIMIZATION TRIGGERED!");
-                println!("   Index lookup: {:?}", query_time);
+                println!("   Index lookup: {query_time:?}");
                 println!("   Files scanned: 0");
                 println!("   Bytes read: 0");
                 println!("   Result: No matches found (authoritative from index)");
@@ -197,37 +211,69 @@ async fn main() -> Result<()> {
                 println!("   📁 {}: row group {}", result.file_path, result.row_group);
             }
 
-            // let parquet_filter = ParquetFilter::new();
-            // let output = parquet_filter
-            //     .query_with_index_engine(
-            //         Path::new(index_dir),
-            //         Path::new(data_path),
-            //         column,
-            //         term,
-            //         output_format,
-            //     )
-            //     .await?;
+            // Create the PdqTableProvider using the builder
+            let table_provider = PdqTableProviderBuilder::new("pdq_table".to_string())
+                .with_index_dir(index_dir)
+                .with_data_dir(data_path)
+                .build()
+                .await?;
 
-            // let total_time = start_time.elapsed();
+            // Create a new DataFusion context
+            let ctx = SessionContext::new();
 
-            // println!("🎯 Query Complete!");
-            // println!("   Total time: {:?}", total_time);
+            // Register our table provider
+            ctx.register_table("pdq_table", Arc::new(table_provider))?;
 
-            // if output.is_empty() {
-            //     println!("   Result: No matching records found in the data");
-            // } else {
-            //     println!("   Result: Found matching data");
-            //     if output_format == "csv"
-            //         || output_format == "json"
-            //         || output_format == "jsonl"
-            //         || output_format == "ndjson"
-            //     {
-            //         println!("\n📋 Output:");
-            //         println!("{output}");
-            //     } else {
-            //         println!("{output}");
-            //     }
-            // }
+            // Build and execute the query
+            let sql = format!("SELECT * FROM pdq_table WHERE {column} = '{term}'");
+            println!("🔍 Executing SQL: {sql}");
+
+            let df = ctx.sql(&sql).await?;
+
+            // Execute and collect results
+            let results = df.collect().await?;
+
+            let total_time = start_time.elapsed();
+
+            println!("🎯 Query Complete!");
+            println!("   Total time: {total_time:?}");
+
+            if results.is_empty() {
+                println!("   Result: No matching records found in the data");
+            } else {
+                let row_count: usize = results.iter().map(|batch| batch.num_rows()).sum();
+                println!("   Result: Found {row_count} matching records");
+
+                // Handle output based on format and destination
+                if output_format == "table" && output_file.is_none() {
+                    // Pretty print to terminal if output is table and no file is specified
+                    println!("\n📋 Output:");
+                    pretty::print_batches(&results)?;
+                } else {
+                    // Write to file or stdout based on user preference
+                    let dest: Box<dyn Write> = if let Some(file_path) = output_file {
+                        println!("Writing results to file: {file_path}");
+                        Box::new(BufWriter::new(File::create(file_path)?))
+                    } else {
+                        // Use buffered stdout with lock for performance
+                        let stdout = std::io::stdout();
+                        println!("\n📋 Output:");
+                        Box::new(BufWriter::new(stdout.lock()))
+                    };
+
+                    // Format and write based on chosen format
+                    match output_format.as_str() {
+                        "csv" => write_batches_as_csv(&results, dest)?,
+                        "json" | "jsonl" | "ndjson" => write_batches_as_json(&results, dest)?,
+                        "table" => {
+                            // If table format is requested but output is to file,
+                            // default to CSV for better compatibility
+                            write_batches_as_csv(&results, dest)?
+                        }
+                        _ => write_batches_as_json(&results, dest)?,
+                    }
+                }
+            }
         }
         _ => {
             eprintln!("No subcommand provided. Use --help for usage information.");
@@ -235,5 +281,37 @@ async fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Write record batches as CSV to the provided writer
+fn write_batches_as_csv(batches: &[RecordBatch], writer: Box<dyn Write>) -> Result<()> {
+    if batches.is_empty() {
+        return Ok(());
+    }
+
+    let mut csv_writer = WriterBuilder::new().with_header(true).build(writer);
+
+    for batch in batches {
+        csv_writer.write(batch)?;
+    }
+
+    Ok(())
+}
+
+/// Write record batches as JSON to the provided writer
+fn write_batches_as_json(batches: &[RecordBatch], writer: Box<dyn Write>) -> Result<()> {
+    if batches.is_empty() {
+        return Ok(());
+    }
+
+    let mut json_writer = LineDelimitedWriter::new(writer);
+
+    // Write each batch as a separate JSON object
+    for batch in batches {
+        json_writer.write_batches(&[batch])?;
+    }
+
+    json_writer.finish()?;
     Ok(())
 }
