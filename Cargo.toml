@@ -1,31 +1,39 @@
 [package]
 name = "pdq"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [[bin]]
 name = "pdq"
-path = "bin/pdq.rs"
+path = "src/bin/pdq.rs"
+
 
 [dependencies]
 arrow = "55.2.0"
 async-trait = "0.1"
-clap = "4.0"
-datafusion = { features = [
-    "backtrace",
-], git = "https://github.com/apache/datafusion.git" }
-datafusion-expr = { git = "https://github.com/apache/datafusion.git" }
-datafusion-optimizer = { git = "https://github.com/apache/datafusion.git" }
-datafusion-common = { git = "https://github.com/apache/datafusion.git" }
-datafusion-physical-expr = { git = "https://github.com/apache/datafusion.git" }
-datafusion-sql = { git = "https://github.com/apache/datafusion.git" }
+clap = { version = "4.0", features = ["derive"] }
+env_logger = "0.10"
 fst = "0.4.7"
-parquet = "55.2.0"
 rayon = "1.8"
 tokio = { version = "1.46", features = ["rt-multi-thread", "macros", "fs"] }
 walkdir = "2.5"
 memmap2 = "0.9"
 futures = "0.3"
+datafusion = { features = [
+    "backtrace",
+    "parquet",
+], git = "https://github.com/apache/datafusion.git" }
+parquet = { version = "55.2.0", default-features = false, features = [
+    "arrow",
+    "async",
+    "object_store",
+    "encryption",
+] }
+object_store = "0.12.2"
+bytes = "1.10.1"
+anyhow = "1.0.98"
+tracing = "0.1.41"
+
 
 [dev-dependencies]
 serde = { version = "1.0", features = ["derive"] }

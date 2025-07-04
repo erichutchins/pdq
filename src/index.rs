@@ -1,8 +1,8 @@
-use crate::{Result, calculate_file_hash};
+use crate::{calculate_file_hash, Result};
 use fst::SetBuilder;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::reader::{FileReader, SerializedFileReader};
-use std::fs::{File, create_dir_all};
+use std::fs::{create_dir_all, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;

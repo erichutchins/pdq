@@ -1,4 +1,4 @@
-use crate::{Result, calculate_file_hash};
+use crate::{calculate_file_hash, Result};
 use fst::{IntoStreamer, Set, Streamer};
 use memmap2::Mmap;
 use rayon::prelude::*;
@@ -39,7 +39,7 @@ impl IndexQueryEngine {
                 let index_path = self
                     .index_dir
                     .join(&file_hash)
-                    .join(format!("{}.fst", column));
+                    .join(format!("{column}.fst"));
 
                 if index_path.exists() {
                     let row_groups = self.search_index(&index_path, term)?;
@@ -54,8 +54,7 @@ impl IndexQueryEngine {
             })
             .collect();
 
-        let file_row_groups: HashMap<String, Vec<usize>> =
-            results?.into_iter().filter_map(|x| x).collect();
+        let file_row_groups: HashMap<String, Vec<usize>> = results?.into_iter().flatten().collect();
 
         Ok(file_row_groups)
     }
@@ -71,8 +70,8 @@ impl IndexQueryEngine {
 
         // Create range query bounds for exact match
         // We want all keys that start with "term\x00" but not "term\x01"
-        let start_key = format!("{}\x00", term);
-        let end_key = format!("{}\x01", term);
+        let start_key = format!("{term}\x00");
+        let end_key = format!("{term}\x01");
 
         let mut stream = set
             .range()
@@ -131,7 +130,7 @@ impl IndexQueryEngine {
                 let index_path = self
                     .index_dir
                     .join(&file_hash)
-                    .join(format!("{}.fst", column));
+                    .join(format!("{column}.fst"));
 
                 if index_path.exists() {
                     let row_groups = self.prefix_search_index(&index_path, prefix)?;
@@ -146,8 +145,7 @@ impl IndexQueryEngine {
             })
             .collect();
 
-        let file_row_groups: HashMap<String, Vec<usize>> =
-            results?.into_iter().filter_map(|x| x).collect();
+        let file_row_groups: HashMap<String, Vec<usize>> = results?.into_iter().flatten().collect();
 
         Ok(file_row_groups)
     }
@@ -162,7 +160,7 @@ impl IndexQueryEngine {
 
         // For prefix search, we want all keys that start with the prefix
         // Start with prefix followed by null separator
-        let start_key = format!("{}\x00", prefix);
+        let start_key = format!("{prefix}\x00");
 
         // End with prefix followed by the next possible character + null
         // We increment the last character of the prefix to get the upper bound
@@ -170,7 +168,7 @@ impl IndexQueryEngine {
             let mut end_prefix = prefix.to_string();
             end_prefix.pop();
             end_prefix.push(char::from_u32(last_char as u32 + 1).unwrap_or('\u{10FFFF}'));
-            format!("{}\x00", end_prefix)
+            format!("{end_prefix}\x00")
         } else {
             "\x01".to_string()
         };
@@ -224,7 +222,7 @@ impl IndexQueryEngine {
                 let index_path = self
                     .index_dir
                     .join(&file_hash)
-                    .join(format!("{}.fst", column));
+                    .join(format!("{column}.fst"));
 
                 if index_path.exists() {
                     let row_groups = self.range_search_index(&index_path, start, end)?;
@@ -239,8 +237,7 @@ impl IndexQueryEngine {
             })
             .collect();
 
-        let file_row_groups: HashMap<String, Vec<usize>> =
-            results?.into_iter().filter_map(|x| x).collect();
+        let file_row_groups: HashMap<String, Vec<usize>> = results?.into_iter().flatten().collect();
 
         Ok(file_row_groups)
     }
@@ -254,8 +251,8 @@ impl IndexQueryEngine {
         let mut row_groups = Vec::new();
 
         // Range search from start\x00 to end\x01 (to include end)
-        let start_key = format!("{}\x00", start);
-        let end_key = format!("{}\x01", end);
+        let start_key = format!("{start}\x00");
+        let end_key = format!("{end}\x01");
 
         let mut stream = set
             .range()
@@ -286,7 +283,7 @@ impl IndexQueryEngine {
         let parquet_files: Vec<_> = WalkDir::new(data_dir)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map_or(false, |ext| ext == "parquet"))
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "parquet"))
             .collect();
 
         // Process files in parallel to compute hashes
@@ -304,8 +301,7 @@ impl IndexQueryEngine {
             })
             .collect();
 
-        let hash_to_path: HashMap<String, PathBuf> =
-            results?.into_iter().filter_map(|x| x).collect();
+        let hash_to_path: HashMap<String, PathBuf> = results?.into_iter().flatten().collect();
 
         Ok(hash_to_path)
     }
@@ -319,7 +315,7 @@ impl IndexQueryEngine {
             for entry in std::fs::read_dir(&file_hash_dir)? {
                 let entry = entry?;
                 let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "fst") {
+                if path.extension().is_some_and(|ext| ext == "fst") {
                     if let Some(column_name) = path.file_stem().and_then(|s| s.to_str()) {
                         columns.push(column_name.to_string());
                     }

@@ -1,4 +1,4 @@
-use crate::{Result, provider::create_table_provider_from_index_results, query::IndexQueryEngine};
+use crate::{provider::create_table_provider_from_index_results, query::IndexQueryEngine, Result};
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::csv::WriterBuilder;
 use datafusion::arrow::json::LineDelimitedWriter;
@@ -58,7 +58,7 @@ impl ParquetFilter {
 
         match output_format {
             "csv" => self.format_as_csv(all_results),
-            "json" | "jsonl" | "ndjson" => self.format_as_jsonl(all_results),
+            "json" | "`jsonl" | "ndjson" => self.format_as_jsonl(all_results),
             _ => self.format_as_jsonl(all_results), // Default to JSONL
         }
     }

@@ -33,14 +33,10 @@ impl Searcher {
                 let index_path = self
                     .index_dir
                     .join(&*file_hash)
-                    .join(format!("{}.fst", column));
+                    .join(format!("{column}.fst"));
 
                 // Search this specific FST file
-                if let Ok(index_results) = self.search_index(&index_path.to_string_lossy(), term) {
-                    Some(index_results)
-                } else {
-                    None
-                }
+                self.search_index(&index_path.to_string_lossy(), term).ok()
             })
             .flatten()
             .collect();
@@ -64,15 +60,11 @@ impl Searcher {
                 let index_path = self
                     .index_dir
                     .join(&*file_hash)
-                    .join(format!("{}.fst", column));
+                    .join(format!("{column}.fst"));
 
                 // Search this specific FST file
-                if let Ok(index_results) = self.prefix_search(&index_path.to_string_lossy(), prefix)
-                {
-                    Some(index_results)
-                } else {
-                    None
-                }
+                self.prefix_search(&index_path.to_string_lossy(), prefix)
+                    .ok()
             })
             .flatten()
             .collect();
@@ -96,16 +88,11 @@ impl Searcher {
                 let index_path = self
                     .index_dir
                     .join(&*file_hash)
-                    .join(format!("{}.fst", column));
+                    .join(format!("{column}.fst"));
 
                 // Search this specific FST file
-                if let Ok(index_results) =
-                    self.range_search_index(&index_path.to_string_lossy(), start, end)
-                {
-                    Some(index_results)
-                } else {
-                    None
-                }
+                self.range_search_index(&index_path.to_string_lossy(), start, end)
+                    .ok()
             })
             .flatten()
             .collect();
@@ -245,7 +232,7 @@ mod tests {
 
         // Create some dummy directories to simulate file hash directories
         for i in 0..5 {
-            let hash_dir = index_dir.join(format!("hash_{}", i));
+            let hash_dir = index_dir.join(format!("hash_{i}"));
             fs::create_dir_all(&hash_dir)?;
         }
 

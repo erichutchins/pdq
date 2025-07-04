@@ -1,10 +1,9 @@
 pub mod index;
-pub mod parquet_filter;
 pub mod provider;
 pub mod query;
 pub mod search;
 
-pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+use anyhow::Result;
 
 #[derive(Debug, Clone)]
 pub struct SearchResult {
