@@ -6,17 +6,52 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+/// Searcher provides fast, parallel lookups against FST indices.
+///
+/// This component queries FST (Finite State Transducer) indices created by the Indexer
+/// to efficiently locate values across multiple Parquet files without scanning the raw data.
+/// It supports exact match, prefix, and range queries against indexed columns.
+///
+/// All search operations run in parallel across multiple FST files for maximum performance.
 pub struct Searcher {
+    /// Directory containing FST index files organized by file hash
     index_dir: PathBuf,
 }
 
 impl Searcher {
+    /// Creates a new Searcher instance for the specified index directory.
+    ///
+    /// # Parameters
+    ///
+    /// * `index_dir` - Path to the directory containing FST index files
+    ///
+    /// # Returns
+    ///
+    /// A new Searcher instance ready to perform lookups
     pub fn new(index_dir: &str) -> Self {
         Self {
             index_dir: PathBuf::from(index_dir),
         }
     }
 
+    /// Performs an exact match search across all indexed files.
+    ///
+    /// Searches all FST indices for the specified column and term, returning
+    /// file paths and row groups where exact matches exist. This is the fastest
+    /// and most selective search operation.
+    ///
+    /// # Parameters
+    ///
+    /// * `column` - Name of the indexed column to search
+    /// * `term` - Exact value to match in the column
+    ///
+    /// # Returns
+    ///
+    /// Vector of SearchResults containing file paths and row groups with matches
+    ///
+    /// # Error
+    ///
+    /// Returns an error if index files cannot be read or processed
     pub fn exact_search(&self, column: &str, term: &str) -> Result<Vec<SearchResult>> {
         // Collect directory entries first for parallel processing
         let entries: Vec<_> = WalkDir::new(&self.index_dir)
@@ -44,6 +79,23 @@ impl Searcher {
         Ok(results)
     }
 
+    /// Performs a prefix search across all indexed files.
+    ///
+    /// Searches all FST indices for the specified column and returns matches
+    /// that begin with the given prefix. Useful for substring or wildcard searches.
+    ///
+    /// # Parameters
+    ///
+    /// * `column` - Name of the indexed column to search
+    /// * `prefix` - String prefix to match at the beginning of values
+    ///
+    /// # Returns
+    ///
+    /// Vector of SearchResults containing file paths and row groups with matches
+    ///
+    /// # Error
+    ///
+    /// Returns an error if index files cannot be read or processed
     pub fn search(&self, column: &str, prefix: &str) -> Result<Vec<SearchResult>> {
         // Collect directory entries first for parallel processing
         let entries: Vec<_> = WalkDir::new(&self.index_dir)
@@ -72,6 +124,25 @@ impl Searcher {
         Ok(results)
     }
 
+    /// Performs a range search across all indexed files.
+    ///
+    /// Searches all FST indices for the specified column and returns matches
+    /// that fall within the given range (inclusive start, exclusive end).
+    /// Ideal for numeric or date ranges.
+    ///
+    /// # Parameters
+    ///
+    /// * `column` - Name of the indexed column to search
+    /// * `start` - Start of range (inclusive)
+    /// * `end` - End of range (exclusive)
+    ///
+    /// # Returns
+    ///
+    /// Vector of SearchResults containing file paths and row groups with matches
+    ///
+    /// # Error
+    ///
+    /// Returns an error if index files cannot be read or processed
     pub fn range_search(&self, column: &str, start: &str, end: &str) -> Result<Vec<SearchResult>> {
         // Collect directory entries first for parallel processing
         let entries: Vec<_> = WalkDir::new(&self.index_dir)
@@ -100,6 +171,24 @@ impl Searcher {
         Ok(results)
     }
 
+    /// Searches a single FST index file for exact matches.
+    ///
+    /// Uses memory mapping for efficient access and streams results
+    /// for matches between `term\x00` and `term\x01` to capture all
+    /// row groups containing the exact term.
+    ///
+    /// # Parameters
+    ///
+    /// * `index_path` - Path to the specific FST index file to search
+    /// * `term` - Exact value to match
+    ///
+    /// # Returns
+    ///
+    /// Vector of SearchResults containing file paths and row groups with matches
+    ///
+    /// # Error
+    ///
+    /// Returns an error if the index file cannot be read or processed
     fn search_index(&self, index_path: &str, term: &str) -> Result<Vec<SearchResult>> {
         let file = File::open(index_path)?;
         let mmap = unsafe { Mmap::map(&file)? };
@@ -120,6 +209,24 @@ impl Searcher {
         Ok(results)
     }
 
+    /// Searches a single FST index file for prefix matches.
+    ///
+    /// Uses memory mapping for efficient access and streams all keys
+    /// that begin with the given prefix, capturing all row groups
+    /// with matching values.
+    ///
+    /// # Parameters
+    ///
+    /// * `index_path` - Path to the specific FST index file to search
+    /// * `prefix` - String prefix to match
+    ///
+    /// # Returns
+    ///
+    /// Vector of SearchResults containing file paths and row groups with matches
+    ///
+    /// # Error
+    ///
+    /// Returns an error if the index file cannot be read or processed
     fn prefix_search(&self, index_path: &str, prefix: &str) -> Result<Vec<SearchResult>> {
         let file = File::open(index_path)?;
         let mmap = unsafe { Mmap::map(&file)? };
@@ -140,6 +247,24 @@ impl Searcher {
         Ok(results)
     }
 
+    /// Searches a single FST index file for range matches.
+    ///
+    /// Uses memory mapping for efficient access and streams all keys
+    /// that fall within the given range, inclusive of start and exclusive of end.
+    ///
+    /// # Parameters
+    ///
+    /// * `index_path` - Path to the specific FST index file to search
+    /// * `start` - Start of range (inclusive)
+    /// * `end` - End of range (exclusive)
+    ///
+    /// # Returns
+    ///
+    /// Vector of SearchResults containing file paths and row groups with matches
+    ///
+    /// # Error
+    ///
+    /// Returns an error if the index file cannot be read or processed
     fn range_search_index(
         &self,
         index_path: &str,
@@ -165,6 +290,23 @@ impl Searcher {
         Ok(results)
     }
 
+    /// Parses a key from the FST index into a SearchResult.
+    ///
+    /// Extracts the row group number and file hash from an FST key string
+    /// using the format: `value\x00rgN` where N is the row group index.
+    ///
+    /// # Parameters
+    ///
+    /// * `key` - Raw key bytes from the FST index
+    /// * `index_path` - Path to the FST index file (used to extract file hash)
+    ///
+    /// # Returns
+    ///
+    /// Option containing a SearchResult with file path and row group index
+    ///
+    /// # Error
+    ///
+    /// Returns an error if the key cannot be parsed or contains invalid UTF-8
     fn parse_key(&self, key: &[u8], index_path: &str) -> Result<Option<SearchResult>> {
         let key_str = String::from_utf8(key.to_vec())?;
 

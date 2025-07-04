@@ -418,10 +418,10 @@ mod tests {
         let mut writer = std::io::BufWriter::new(index_file);
 
         let mut builder = SetBuilder::new(&mut writer)?;
+        builder.insert("10.0.0.1\x00rg2")?;
         builder.insert("192.168.1.1\x00rg0")?;
         builder.insert("192.168.1.2\x00rg1")?;
         builder.insert("192.168.2.1\x00rg0")?;
-        builder.insert("10.0.0.1\x00rg2")?;
         builder.finish()?;
         drop(writer);
 

@@ -7,17 +7,56 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+/// Indexer builds FST (Finite State Transducer) indices for Parquet files.
+///
+/// The Indexer scans Parquet files and creates a column-specific FST index for
+/// rapid value lookups. Each index maps column values to the specific row groups
+/// where they appear, enabling precise row group pruning during queries.
+///
+/// # Index Structure
+///
+/// - Creates one FST file per (column, parquet_file) combination
+/// - Stores indices in a directory structure based on file hashes
+/// - Index keys are formatted as `value\x00rgN` where N is the row group index
 pub struct Indexer {
+    /// Directory where FST index files will be stored
     output_dir: String,
 }
 
 impl Indexer {
+    /// Creates a new Indexer that will store indices in the specified directory.
+    ///
+    /// # Parameters
+    ///
+    /// * `output_dir` - Path to directory where FST index files will be stored
+    ///
+    /// # Returns
+    ///
+    /// A new Indexer instance ready to build indices
     pub fn new(output_dir: &str) -> Self {
         Self {
             output_dir: output_dir.to_string(),
         }
     }
 
+    /// Builds FST indices for a specific column across all Parquet files in a directory.
+    ///
+    /// Recursively finds all Parquet files in the given directory and creates an FST
+    /// index for the specified column in each file. Each index maps column values to
+    /// row groups where they appear.
+    ///
+    /// # Parameters
+    ///
+    /// * `data_dir` - Directory containing Parquet files to index
+    /// * `column` - Name of the column to index
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` on success, or an error if index creation fails
+    ///
+    /// # Error
+    ///
+    /// Returns an error if directory creation fails or if any file cannot be indexed
     pub fn build_index(&self, data_dir: &Path, column: &str) -> Result<()> {
         create_dir_all(&self.output_dir)?;
 
@@ -35,6 +74,30 @@ impl Indexer {
         Ok(())
     }
 
+    /// Creates an FST index for a specific column in a single Parquet file.
+    ///
+    /// For each row group in the file, extracts unique values from the specified column
+    /// and builds a combined FST index. Keys in the index are formatted as `value\x00rgN`
+    /// where N is the row group index, allowing precise row group lookups.
+    ///
+    /// # Parameters
+    ///
+    /// * `file_path` - Path to the Parquet file to index
+    /// * `column` - Name of the column to extract values from
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` on success, or an error if indexing fails
+    ///
+    /// # Error
+    ///
+    /// Returns an error if the file cannot be opened, if the column does not exist,
+    /// or if the FST index cannot be created
+    ///
+    /// # Index Storage
+    ///
+    /// The index is stored at: `{output_dir}/{file_hash}/{column}.fst`
+    /// where `file_hash` is a hash of the file path for uniqueness
     fn index_file(&self, file_path: &Path, column: &str) -> Result<()> {
         let file = File::open(file_path)?;
         let reader = SerializedFileReader::new(file)?;
