@@ -32,7 +32,7 @@ async fn create_test_parquet_files(
     let mut file_paths = Vec::with_capacity(file_count);
 
     for file_idx in 0..file_count {
-        let file_path = dir.join(format!("test_file_{}.parquet", file_idx));
+        let file_path = dir.join(format!("test_file_{file_idx}.parquet"));
         file_paths.push(file_path.clone());
 
         let mut writer = parquet::arrow::ArrowWriter::try_new(

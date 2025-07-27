@@ -3,6 +3,9 @@ pub mod provider;
 pub mod query;
 pub mod search;
 
+#[cfg(feature = "pyo3")]
+mod py_module;
+
 use anyhow::Result;
 pub use provider::PdqTableProviderBuilder;
 

@@ -4,7 +4,6 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::context::SessionContext;
 
-use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::parquet::basic::{Compression, Encoding};
 use datafusion::parquet::file::properties::WriterProperties;
 use pdq::{index::Indexer, search::Searcher, PdqTableProviderBuilder};
@@ -12,6 +11,7 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tempfile::TempDir;
+
 /// Integration test for PDQ: Creates test data, indexes it, and runs queries
 /// to validate the complete pipeline works correctly.
 #[tokio::test]
@@ -149,7 +149,7 @@ where
     for batch in batches {
         let column = batch
             .column_by_name(column_name)
-            .ok_or_else(|| anyhow::anyhow!("Column not found: {}", column_name))?;
+            .ok_or_else(|| anyhow::anyhow!("Column not found: {column_name}"))?;
 
         for row_idx in 0..batch.num_rows() {
             let scalar_value = match column.data_type() {
@@ -179,9 +179,7 @@ where
 
             assert!(
                 predicate(scalar_value.clone()),
-                "Value in column {} doesn't match predicate: {:?}",
-                column_name,
-                scalar_value
+                "Value in column {column_name} doesn't match predicate: {scalar_value:?}",
             );
         }
     }
