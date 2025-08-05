@@ -6,6 +6,12 @@ dist/
 wheels/
 *.egg-info
 
+# C extensions
+*.so
+
+# Ruff stuff:
+.ruff_cache/
+
 # Virtual environments
 .venv
 
