@@ -46,7 +46,7 @@ async fn test_complete_pdq_pipeline() -> Result<()> {
     );
 
     // Query using PdqTableProvider
-    let table_provider = PdqTableProviderBuilder::new("test_table".to_string())
+    let table_provider = PdqTableProviderBuilder::new()
         .with_index_dir(&index_dir)
         .with_data_dir(&data_dir)
         .build()

@@ -1,4 +1,5 @@
-use crate::{calculate_file_hash, Result};
+use crate::calculate_file_hash;
+use anyhow::Result;
 use fst::{IntoStreamer, Set, Streamer};
 use memmap2::Mmap;
 use rayon::prelude::*;

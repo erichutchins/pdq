@@ -111,7 +111,7 @@ async fn test_table_provider_builder() -> Result<(), Box<dyn std::error::Error>>
     create_test_parquet_files(&data_dir, 2, 1000, 500, values).await?;
 
     // Test the builder pattern
-    let provider = PdqTableProviderBuilder::new("test_table".to_string())
+    let provider = PdqTableProviderBuilder::new()
         .with_index_dir(&index_dir)
         .with_data_dir(&data_dir)
         .build()
@@ -140,7 +140,7 @@ async fn test_schema_inference() -> Result<(), Box<dyn std::error::Error>> {
     create_test_parquet_files(&data_dir, 1, 1000, 500, values).await?;
 
     // Create provider and verify schema
-    let provider = PdqTableProviderBuilder::new("test_table".to_string())
+    let provider = PdqTableProviderBuilder::new()
         .with_index_dir(&index_dir)
         .with_data_dir(&data_dir)
         .build()
@@ -175,7 +175,7 @@ async fn test_basic_query() -> Result<(), Box<dyn std::error::Error>> {
     create_test_index(&index_dir, &data_dir, values).await?;
 
     // Create provider
-    let provider = PdqTableProviderBuilder::new("test_table".to_string())
+    let provider = PdqTableProviderBuilder::new()
         .with_index_dir(&index_dir)
         .with_data_dir(&data_dir)
         .build()
@@ -216,7 +216,7 @@ async fn test_filter_pushdown() -> Result<(), Box<dyn std::error::Error>> {
     create_test_index(&index_dir, &data_dir, values).await?;
 
     // Create provider
-    let provider = PdqTableProviderBuilder::new("test_table".to_string())
+    let provider = PdqTableProviderBuilder::new()
         .with_index_dir(&index_dir)
         .with_data_dir(&data_dir)
         .build()
@@ -256,7 +256,7 @@ async fn test_filtered_query() -> Result<(), Box<dyn std::error::Error>> {
     create_test_index(&index_dir, &data_dir, values).await?;
 
     // Create provider
-    let provider = PdqTableProviderBuilder::new("test_table".to_string())
+    let provider = PdqTableProviderBuilder::new()
         .with_index_dir(&index_dir)
         .with_data_dir(&data_dir)
         .build()
@@ -313,7 +313,7 @@ async fn test_empty_result_optimization() -> Result<(), Box<dyn std::error::Erro
     create_test_index(&index_dir, &data_dir, values).await?;
 
     // Create provider
-    let provider = PdqTableProviderBuilder::new("test_table".to_string())
+    let provider = PdqTableProviderBuilder::new()
         .with_index_dir(&index_dir)
         .with_data_dir(&data_dir)
         .build()
@@ -353,7 +353,7 @@ async fn test_multiple_filters() -> Result<(), Box<dyn std::error::Error>> {
     create_test_index(&index_dir, &data_dir, values).await?;
 
     // Create provider
-    let provider = PdqTableProviderBuilder::new("test_table".to_string())
+    let provider = PdqTableProviderBuilder::new()
         .with_index_dir(&index_dir)
         .with_data_dir(&data_dir)
         .build()

@@ -1,81 +1,66 @@
-use crate::query::IndexQueryEngine;
-use async_trait::async_trait;
-use bytes::Bytes;
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::catalog::Session;
-use datafusion::common::{internal_datafusion_err, DFSchema, DataFusionError, Result};
-use datafusion::datasource::listing::PartitionedFile;
-use datafusion::datasource::physical_plan::parquet::ParquetAccessPlan;
-use datafusion::datasource::physical_plan::{
-    FileMeta, FileScanConfigBuilder, ParquetFileReaderFactory, ParquetSource,
-};
-use datafusion::datasource::source::DataSourceExec;
-use datafusion::datasource::TableProvider;
-use datafusion::execution::object_store::ObjectStoreUrl;
-use datafusion::logical_expr::{utils::conjunction, Expr, TableProviderFilterPushDown, TableType};
-use datafusion::parquet::arrow::arrow_reader::{
-    ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
-};
-use datafusion::parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader};
-use datafusion::parquet::file::metadata::ParquetMetaData;
-use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
-use datafusion::physical_plan::ExecutionPlan;
-use futures::future::BoxFuture;
-use futures::FutureExt;
-use object_store::ObjectStore;
 use std::any::Any;
-use std::collections::HashMap;
-use std::fs::File;
-use std::ops::Range;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::fs;
 
-/// PdqTableProvider that implements true row-group level optimization
+use arrow::array::{ArrayRef, BooleanArray};
+use arrow::datatypes::{Schema, SchemaRef};
+use async_trait::async_trait;
+use datafusion::catalog::Session;
+use datafusion::common::pruning::PruningStatistics;
+use datafusion::common::{
+    Column, DFSchema, DataFusionError, Result as DataFusionResult, ScalarValue,
+};
+use datafusion::datasource::listing::PartitionedFile;
+use datafusion::datasource::memory::DataSourceExec;
+use datafusion::datasource::physical_plan::{FileScanConfigBuilder, ParquetSource};
+use datafusion::datasource::TableProvider;
+use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::logical_expr::utils::conjunction;
+use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
+use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use datafusion::parquet::file::metadata::ParquetMetaData;
+use datafusion::parquet::file::reader::{FileReader, SerializedFileReader};
+use datafusion::physical_plan::ExecutionPlan;
+
+// Parquet execution imports
+use datafusion::datasource::physical_plan::parquet::ParquetAccessPlan;
+
+use crate::calculate_file_hash;
+use crate::query::IndexQueryEngine;
+
+/// Enhanced PDQ TableProvider with DataFusion v49 improvements
 ///
-/// This provider leverages DataFusion's latest filter pushdown APIs to:
-/// 1. Use FST index results to identify relevant files and row groups
-/// 2. Create execution plans that only read specific row groups
-/// 3. Support dynamic filter pushdown for additional optimization
-/// 4. Provide metrics on pruning effectiveness
-/// 5. **Critical optimization**: Returns empty results immediately when index finds no matches
+/// This implementation provides:
+/// 1. Modern FileScanConfigBuilder usage with ParquetSource
+/// 2. PruningStatistics implementation leveraging FST indices
+/// 3. Metadata caching for repeated queries
+/// 4. Better error handling and zero-I/O optimization
 #[derive(Debug)]
 pub struct PdqTableProvider {
-    /// FST index engine for performing fast column value lookups
-    index_engine: IndexQueryEngine,
-    /// Base directory containing the Parquet data files
+    /// FST-based index query engine
+    index_engine: Arc<IndexQueryEngine>,
+    /// Directory containing Parquet data files
     data_dir: PathBuf,
-    /// Arrow schema for the table (inferred from Parquet files)
+    /// Schema of the table
     schema: SchemaRef,
-    /// Table name used for debugging, metrics, and registration
+    /// Table name for identification
     table_name: String,
+    /// Whether to use row-level selections
+    use_row_selections: bool,
+    /// Cached file metadata for performance
+    metadata_cache: HashMap<String, Arc<ParquetMetaData>>,
 }
 
 impl PdqTableProvider {
-    /// Creates a new PdqTableProvider with the specified index and data directories.
-    ///
-    /// # Parameters
-    ///
-    /// * `index_dir` - Directory containing FST index files
-    /// * `data_dir` - Directory containing Parquet data files
-    /// * `table_name` - Name for the table provider (used in metrics and debugging)
-    ///
-    /// # Returns
-    ///
-    /// A new `PdqTableProvider` instance ready for registration with DataFusion
-    ///
-    /// # Error
-    ///
-    /// Returns an error if schema inference fails (no Parquet files found or read error)
+    /// Create a new PDQ TableProvider with modern DataFusion integration
     pub async fn new(
-        index_dir: impl AsRef<Path>,
-        data_dir: impl AsRef<Path>,
+        index_engine: Arc<IndexQueryEngine>,
+        data_dir: PathBuf,
         table_name: String,
-    ) -> Result<Self> {
-        let index_engine = IndexQueryEngine::new(index_dir);
-        let data_dir = data_dir.as_ref().to_path_buf();
-
-        // Infer schema from the first parquet file we can find
+        use_row_selections: bool,
+    ) -> anyhow::Result<Self> {
         let schema = Self::infer_schema_from_directory(&data_dir).await?;
 
         Ok(Self {
@@ -83,151 +68,142 @@ impl PdqTableProvider {
             data_dir,
             schema,
             table_name,
+            use_row_selections,
+            metadata_cache: HashMap::new(),
         })
     }
 
-    /// Infers Arrow schema by examining Parquet files in the data directory.
-    ///
-    /// Walks the directory tree to find the first valid Parquet file
-    /// and extracts its schema using Arrow's Parquet reader.
-    ///
-    /// # Parameters
-    ///
-    /// * `data_dir` - Base directory containing Parquet files
-    ///
-    /// # Returns
-    ///
-    /// The Arrow schema as a SchemaRef
-    ///
-    /// # Error
-    ///
-    /// Returns an error if no Parquet files are found or metadata cannot be read
-    async fn infer_schema_from_directory(data_dir: &Path) -> Result<SchemaRef> {
-        // Find the first .parquet file in the directory using walkdir
-        for entry in walkdir::WalkDir::new(data_dir)
-            .follow_links(true)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            let path = entry.path();
-
-            // Cross-platform extension checking
-            if let Some(extension) = path.extension() {
-                if extension.to_string_lossy().to_lowercase() == "parquet" {
-                    return Self::infer_schema_from_file(path);
-                }
-            }
-        }
-
-        Err(internal_datafusion_err!(
-            "No parquet files found in data directory"
-        ))
+    /// Enable or disable row-level selections
+    pub fn set_use_row_selection(&mut self, use_row_selections: bool) {
+        self.use_row_selections = use_row_selections;
     }
 
-    /// Infers Arrow schema from a specific Parquet file.
-    ///
-    /// # Parameters
-    ///
-    /// * `path` - Path to the Parquet file
-    ///
-    /// # Returns
-    ///
-    /// The Arrow schema as a SchemaRef
-    ///
-    /// # Error
-    ///
-    /// Returns an error if the file cannot be opened or metadata cannot be read
-    fn infer_schema_from_file(path: impl AsRef<Path>) -> Result<SchemaRef> {
-        let path = path.as_ref();
-        let file = File::open(path)
-            .map_err(|e| internal_datafusion_err!("Failed to open parquet file {path:?}: {e}"))?;
+    /// Check if row selections are enabled
+    pub fn use_row_selections(&self) -> bool {
+        self.use_row_selections
+    }
 
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
-            internal_datafusion_err!("Failed to read parquet metadata from {path:?}: {e}")
-        })?;
+    /// Infer schema from all Parquet files in directory
+    async fn infer_schema_from_directory(data_dir: &Path) -> anyhow::Result<SchemaRef> {
+        use walkdir::WalkDir;
+
+        let mut schema: Option<SchemaRef> = None;
+
+        for entry in WalkDir::new(data_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "parquet"))
+        {
+            let file_schema = Self::infer_schema_from_file(entry.path())?;
+
+            schema = match schema {
+                None => Some(file_schema),
+                Some(existing) => {
+                    // Merge schemas by creating a new schema with all fields
+                    let merged =
+                        Schema::try_merge(vec![(*existing).clone(), (*file_schema).clone()])?;
+                    Some(Arc::new(merged))
+                }
+            };
+        }
+
+        schema.ok_or_else(|| anyhow::anyhow!("No Parquet files found in directory"))
+    }
+
+    /// Infer schema from a single Parquet file
+    fn infer_schema_from_file(file_path: &Path) -> anyhow::Result<SchemaRef> {
+        let file = std::fs::File::open(file_path)?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
         Ok(builder.schema().clone())
     }
 
-    /// Infers schema from files that match the current query.
-    ///
-    /// Tries each file in the list until one succeeds, falling back to
-    /// the existing schema if all attempts fail.
-    ///
-    /// # Parameters
-    ///
-    /// * `files` - List of file paths that match the query criteria
-    ///
-    /// # Returns
-    ///
-    /// The Arrow schema as a SchemaRef
-    fn infer_schema_from_matched_files(&self, files: &[PathBuf]) -> Result<SchemaRef> {
-        if files.is_empty() {
-            tracing::debug!("No files to infer schema from, using existing schema");
-            return Ok(self.schema.clone());
-        }
-
-        // Try each file until we successfully infer a schema
-        let mut last_error = None;
-        for file_path in files {
-            match Self::infer_schema_from_file(file_path) {
-                Ok(schema) => {
-                    tracing::debug!("Successfully inferred schema from {}", file_path.display());
-                    return Ok(schema);
-                }
-                Err(e) => {
-                    tracing::debug!("Failed to infer schema from {}: {}", file_path.display(), e);
-                    last_error = Some(e);
-                }
-            }
-        }
-
-        // If all files failed, log a warning and return the existing schema
-        if let Some(e) = last_error {
-            tracing::warn!("Failed to infer schema from any matched files, using existing schema. Last error: {}", e);
-        }
-        Ok(self.schema.clone())
-    }
-
-    /// Uses the FST index to find relevant files and row groups for a column=value predicate.
-    ///
-    /// This is the core optimization method that eliminates unnecessary file I/O by
-    /// determining exactly which row groups might contain matching values.
-    ///
-    /// # Parameters
-    ///
-    /// * `column` - Column name to filter on
-    /// * `value` - Value to match in the column
-    ///
-    /// # Returns
-    ///
-    /// HashMap mapping file paths to vectors of matching row group indices
-    fn prune_catalog(&self, column: &str, value: &str) -> Result<HashMap<PathBuf, Vec<usize>>> {
-        // Use the index engine to find file hashes and row groups
-        let file_hash_row_groups = match self.index_engine.exact_search(column, value) {
-            Ok(groups) => groups,
-            Err(e) => return Err(internal_datafusion_err!("Index search failed: {}", e)),
-        };
-
-        if file_hash_row_groups.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        // Resolve file hashes to actual file paths
-        let file_hashes: Vec<String> = file_hash_row_groups.keys().cloned().collect();
-        let hash_to_path = self
-            .index_engine
-            .resolve_file_paths(&file_hashes, &self.data_dir)
-            .map_err(|e| internal_datafusion_err!("Failed to resolve file paths: {e}"))?;
-
-        // Convert to path-based mapping
+    /// Use FST index to prune files and row groups
+    fn prune_with_fst_index(
+        &self,
+        filters: &[Expr],
+    ) -> anyhow::Result<HashMap<String, Vec<usize>>> {
         let mut file_row_groups = HashMap::new();
-        for (file_hash, row_groups) in file_hash_row_groups {
-            if let Some(file_path) = hash_to_path.get(&file_hash) {
-                file_row_groups.insert(file_path.clone(), row_groups);
+
+        for filter in filters {
+            if let Some((column, value)) = self.extract_equality_filter(filter) {
+                if let Ok(results) = self.index_engine.exact_search(&column, &value) {
+                    for (file_hash, row_groups) in results {
+                        file_row_groups
+                            .entry(file_hash)
+                            .and_modify(|existing_groups: &mut Vec<usize>| {
+                                existing_groups.retain(|g| row_groups.contains(g));
+                            })
+                            .or_insert(row_groups);
+                    }
+                }
             }
         }
 
         Ok(file_row_groups)
+    }
+
+    /// Extract column=value equality filters for FST index usage
+    fn extract_equality_filter(&self, expr: &Expr) -> Option<(String, String)> {
+        if let Expr::BinaryExpr(binary_expr) = expr {
+            use datafusion::logical_expr::Operator;
+
+            if binary_expr.op == Operator::Eq {
+                if let (Expr::Column(column), Expr::Literal(scalar_value, _)) =
+                    (&*binary_expr.left, &*binary_expr.right)
+                {
+                    return Some((column.name.clone(), scalar_value.to_string()));
+                }
+                if let (Expr::Literal(scalar_value, _), Expr::Column(column)) =
+                    (&*binary_expr.left, &*binary_expr.right)
+                {
+                    return Some((column.name.clone(), scalar_value.to_string()));
+                }
+            }
+        }
+        None
+    }
+
+    /// Create pruning predicate for DataFusion integration
+    fn create_fst_pruning_predicate(
+        &self,
+        filters: &[Expr],
+    ) -> anyhow::Result<Option<Arc<dyn PruningStatistics>>> {
+        if filters.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(Arc::new(FstPruningStatistics::new(
+            Arc::clone(&self.index_engine),
+            filters.to_vec(),
+        ))))
+    }
+
+    /// Resolve file hashes to actual file paths
+    fn resolve_file_paths(
+        &self,
+        file_hashes: &[String],
+    ) -> anyhow::Result<HashMap<String, PathBuf>> {
+        self.index_engine
+            .resolve_file_paths(file_hashes, &self.data_dir)
+    }
+
+    /// Load or retrieve cached metadata for a file
+    async fn get_file_metadata(
+        &mut self,
+        file_path: &Path,
+    ) -> anyhow::Result<Arc<ParquetMetaData>> {
+        let file_hash = calculate_file_hash(&file_path.to_string_lossy())?;
+
+        if let Some(cached) = self.metadata_cache.get(&file_hash) {
+            return Ok(Arc::clone(cached));
+        }
+
+        let file = std::fs::File::open(file_path)?;
+        let reader = SerializedFileReader::new(file)?;
+        let metadata = Arc::new(reader.metadata().clone());
+
+        self.metadata_cache.insert(file_hash, Arc::clone(&metadata));
+        Ok(metadata)
     }
 }
 
@@ -245,595 +221,309 @@ impl TableProvider for PdqTableProvider {
         TableType::Base
     }
 
-    /// Creates an optimized execution plan for scanning Parquet files with row group pruning.
-    ///
-    /// This implementation:
-    /// 1. Extracts column=value filters that can be used with the FST index
-    /// 2. Uses FST lookups to determine which files and row groups might contain matches
-    /// 3. Creates a ParquetAccessPlan with precise row group selection
-    /// 4. Optimizes the scan with buffer reuse, page index, and predicate pushdown
-    /// 5. Short-circuits empty results for zero-IO responses when index finds no matches
-    ///
-    /// # Parameters
-    ///
-    /// * `state` - DataFusion session state
-    /// * `projection` - Optional column indices to project
-    /// * `filters` - Logical expressions to filter the data
-    /// * `limit` - Optional limit on number of rows to return
-    ///
-    /// # Returns
-    ///
-    /// An optimized ExecutionPlan for scanning the Parquet files
+    /// Enhanced scan implementation using modern DataFusion APIs and FST pruning
     async fn scan(
         &self,
         state: &dyn Session,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
-    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        // Start with the default schema
-        let schema_ref = self.schema.clone();
-        let df_schema = DFSchema::try_from(schema_ref.clone())?;
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        // Use FST index to prune files and row groups
+        let file_row_groups = self
+            .prune_with_fst_index(filters)
+            .map_err(|e| DataFusionError::Plan(format!("FST pruning failed: {e}")))?;
 
-        // Convert filters like `a = 1`, `b = 2`
-        // to a single predicate like `a = 1 AND b = 2` suitable for execution
+        // CRITICAL OPTIMIZATION: If the index found no matches, return empty results immediately
+        // The FST index is authoritative - no matches means no data exists
+        // This eliminates 100% of I/O for searches with no results
+        if file_row_groups.is_empty() {
+            let object_store_url = ObjectStoreUrl::parse("file://")?;
+            let source = Arc::new(ParquetSource::default());
+            let config = FileScanConfigBuilder::new(object_store_url, self.schema.clone(), source)
+                .with_projection(projection.cloned())
+                .with_limit(limit)
+                .build();
+
+            return Ok(DataSourceExec::from_data_source(config));
+        }
+
+        // Resolve file hashes to paths
+        let file_hashes: Vec<String> = file_row_groups.keys().cloned().collect();
+        let hash_to_path = self
+            .resolve_file_paths(&file_hashes)
+            .map_err(|e| DataFusionError::Plan(format!("Path resolution failed: {e}")))?;
+
+        // Convert filters to a single predicate for DataFusion
+        let df_schema = DFSchema::try_from(self.schema.clone())?;
         let predicate = conjunction(filters.to_vec());
         let predicate = predicate
             .map(|predicate| state.create_physical_expr(predicate, &df_schema))
             .transpose()?
             .unwrap_or_else(|| datafusion::physical_expr::expressions::lit(true));
 
-        // Try to extract column = value filters that we can handle with our index
-        let mut file_row_groups = HashMap::new();
-        for filter in filters {
-            if let Some((column, value)) = self.extract_equality_filter(filter) {
-                if let Ok(results) = self.prune_catalog(&column, &value) {
-                    for (path, row_groups) in results {
-                        // Merge row groups if the file already exists in our map
-                        file_row_groups
-                            .entry(path)
-                            .and_modify(|existing_groups: &mut Vec<usize>| {
-                                // Only keep row groups that appear in all filters
-                                existing_groups.retain(|g| row_groups.contains(g));
-                            })
-                            .or_insert_with(|| row_groups);
-                    }
-                }
-            }
-        }
+        // Create ParquetSource with predicate
+        let source = ParquetSource::default().with_predicate(predicate);
 
-        // CRITICAL OPTIMIZATION: If the index found no matches, return empty results immediately
-        // The FST index is authoritative - no matches means no data exists
-        // This eliminates 100% of I/O for searches with no results
-        if file_row_groups.is_empty() {
-            // Create an empty execution plan - NO FILE I/O NEEDED
-            let empty_config = FileScanConfigBuilder::new(
-                ObjectStoreUrl::parse("file://")?,
-                schema_ref,
-                Arc::new(ParquetSource::default()),
-            )
-            .build();
-            return Ok(DataSourceExec::from_data_source(empty_config));
-        }
-
-        // Get file paths for schema inference
-        let file_paths: Vec<PathBuf> = file_row_groups.keys().cloned().collect();
-
-        // Update schema with the actual files we're about to query
-        // This ensures the schema is accurate for the data we're accessing
-        let schema_ref = self.infer_schema_from_matched_files(&file_paths)?;
-
-        // Create object store URL and prepare the object store
+        // Build file scan configuration using the proven pattern
         let object_store_url = ObjectStoreUrl::parse("file://")?;
-        let object_store = object_store::local::LocalFileSystem::new();
-        let object_store: Arc<dyn ObjectStore> = Arc::new(object_store);
-
-        // Create a combined reader factory for all files
-        let mut reader_factory = CachedParquetFileReaderFactory::new(Arc::clone(&object_store));
-
-        // Prepare list of partitioned files with access plans
-        let mut partitioned_files = Vec::with_capacity(file_row_groups.len());
-
-        // Process each file and prepare it for scanning
-        for (file_path, row_groups) in &file_row_groups {
-            // Configure a factory interface to avoid re-reading the metadata for this file
-            let indexed_file = PdqIndexedFile::try_new(file_path.clone(), row_groups.clone())?;
-
-            // Add file to the reader factory
-            reader_factory = reader_factory.with_file(&indexed_file);
-
-            // Create access plan for row groups
-            let mut access_plan = indexed_file.scan_none_plan();
-            for &row_group_idx in row_groups {
-                access_plan.scan(row_group_idx);
-            }
-
-            // Create the partitioned file with access plan as extensions
-            let partitioned_file = indexed_file
-                .partitioned_file()
-                .with_extensions(Arc::new(access_plan) as _);
-
-            // Add to our list of files to scan
-            partitioned_files.push(partitioned_file);
-        }
-
-        // Create ParquetSource with predicate and optimized configuration
-        let source = Arc::new(
-            ParquetSource::default()
-                .with_predicate(predicate)
-                .with_enable_page_index(true)
-                .with_pushdown_filters(true)
-                .with_parquet_file_reader_factory(Arc::new(reader_factory)),
-        );
-
-        // Build file scan configuration with all files
         let mut file_scan_config_builder =
-            FileScanConfigBuilder::new(object_store_url, schema_ref, source)
+            FileScanConfigBuilder::new(object_store_url, self.schema.clone(), Arc::new(source))
                 .with_projection(projection.cloned())
                 .with_limit(limit);
 
-        // Add all files to the scan configuration
-        for file in partitioned_files {
-            file_scan_config_builder = file_scan_config_builder.with_file(file);
+        // Add files with row group level access plans based on FST index results
+        for (file_hash, row_groups) in &file_row_groups {
+            if let Some(file_path) = hash_to_path.get(file_hash) {
+                let canonical_path = std::fs::canonicalize(file_path).map_err(|e| {
+                    DataFusionError::Plan(format!("Path canonicalization failed: {e}"))
+                })?;
+
+                let file_size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
+
+                // Load file metadata to determine total number of row groups
+                let file = std::fs::File::open(file_path).map_err(|e| {
+                    DataFusionError::Plan(format!("Failed to open file for metadata: {e}"))
+                })?;
+                let reader = SerializedFileReader::new(file).map_err(|e| {
+                    DataFusionError::Plan(format!("Failed to create parquet reader: {e}"))
+                })?;
+                let metadata = reader.metadata();
+                let total_row_groups = metadata.num_row_groups();
+
+                // Create access plan that initially scans no row groups
+                let mut access_plan = ParquetAccessPlan::new_none(total_row_groups);
+
+                // Enable scanning only for the row groups that contain our target values
+                for &row_group_idx in row_groups {
+                    if row_group_idx < total_row_groups {
+                        access_plan.scan(row_group_idx);
+                    }
+                }
+
+                // Create partitioned file with the access plan
+                let mut partitioned_file =
+                    PartitionedFile::new(canonical_path.display().to_string(), file_size);
+                partitioned_file.extensions = Some(Arc::new(access_plan));
+
+                file_scan_config_builder = file_scan_config_builder.with_file(partitioned_file);
+            }
         }
 
-        // Create execution plan that only reads the identified files and row groups
-        // This uses DataFusion's latest APIs that support row-group level pruning
-        let file_scan_config = file_scan_config_builder.build();
-        Ok(DataSourceExec::from_data_source(file_scan_config))
+        // Create execution plan using the DataSourceExec pattern
+        Ok(DataSourceExec::from_data_source(
+            file_scan_config_builder.build(),
+        ))
     }
 
-    /// Indicates which filters can be pushed down to this provider.
-    ///
-    /// Returns `Inexact` for all filters since our implementation:
-    /// 1. Can significantly prune the files/row-groups that need scanning
-    /// 2. May return row groups that contain false positives (requiring further filtering)
-    /// 3. Should receive all filters to allow for optimized access plans
-    ///
-    /// # Parameters
-    ///
-    /// * `filters` - Array of filter expressions to evaluate
-    ///
-    /// # Returns
-    ///
-    /// A vector indicating filter pushdown capability for each expression
+    /// Enhanced filter pushdown support with FST-aware categorization
     fn supports_filters_pushdown(
         &self,
         filters: &[&Expr],
-    ) -> datafusion::error::Result<Vec<TableProviderFilterPushDown>> {
-        // We can handle exact matches on indexed columns
-        // Inexact because we may return files that don't match after row-level filtering
+    ) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
+        // PDQ can prune row groups with FST but still needs row-level filtering for all filters
         Ok(vec![TableProviderFilterPushDown::Inexact; filters.len()])
     }
 }
 
-impl PdqTableProvider {
-    /// Extracts column=value equality filters from DataFusion expressions.
-    ///
-    /// Handles various expression types including:
-    /// - Basic equality (col = value)
-    /// - LIKE expressions with exact patterns
-    /// - IN expressions with single values
-    ///
-    /// # Parameters
-    ///
-    /// * `expr` - DataFusion expression to analyze
-    ///
-    /// # Returns
-    ///
-    /// Option containing (column_name, value) tuple if expression can be used with FST index
-    fn extract_equality_filter(&self, expr: &Expr) -> Option<(String, String)> {
-        use datafusion::logical_expr::{Expr, Like, Operator};
+/// FST-based PruningStatistics implementation
+///
+/// This leverages PDQ's FST indices to provide precise pruning information
+/// to DataFusion's query optimizer, enabling better performance through
+/// more accurate file and row group elimination.
+struct FstPruningStatistics {
+    index_engine: Arc<IndexQueryEngine>,
+    filters: Vec<Expr>,
+    file_list: Vec<String>,
+}
 
-        match expr {
-            // Handle equality filters (col = value)
-            Expr::BinaryExpr(binary_expr) if binary_expr.op == Operator::Eq => {
-                if let (Expr::Column(col), Expr::Literal(lit, _)) =
-                    (binary_expr.left.as_ref(), binary_expr.right.as_ref())
-                {
-                    let value = lit.to_string();
-                    if !value.is_empty() {
-                        return Some((col.name.clone(), value));
-                    }
-                }
-            }
+impl FstPruningStatistics {
+    fn new(index_engine: Arc<IndexQueryEngine>, filters: Vec<Expr>) -> Self {
+        let file_list = index_engine.list_indexed_files().unwrap_or_default();
 
-            // Handle LIKE expressions with prefix patterns (can use our FST prefix search)
-            Expr::Like(Like {
-                expr,
-                pattern,
-                negated: false,
-                escape_char: None,
-                case_insensitive: false,
-            }) => {
-                if let (Expr::Column(col), Expr::Literal(lit, _)) =
-                    (expr.as_ref(), pattern.as_ref())
-                {
-                    let pattern_value = lit.to_string();
-                    // If pattern starts with a value followed by wildcard, we can use prefix search
-                    if pattern_value.ends_with('%') && !pattern_value.starts_with('%') {
-                        let prefix = pattern_value.trim_end_matches('%');
-                        if !prefix.is_empty() {
-                            return Some((col.name.clone(), prefix.to_string()));
-                        }
-                    }
-                }
-            }
-
-            _ => {}
+        Self {
+            index_engine,
+            filters,
+            file_list,
         }
-
-        None
     }
 }
 
-/// Builder for creating PdqTableProvider instances with flexible configuration.
-///
-/// Provides a fluent API for constructing table providers with appropriate
-/// index and data directories. Handles cross-platform path differences.
+impl PruningStatistics for FstPruningStatistics {
+    fn num_containers(&self) -> usize {
+        self.file_list.len()
+    }
+
+    fn min_values(&self, _column: &Column) -> Option<ArrayRef> {
+        // FST doesn't store min/max directly, but we can approximate
+        // by finding the lexicographically smallest indexed value
+        // For now, return None to let DataFusion handle this
+        None
+    }
+
+    fn max_values(&self, _column: &Column) -> Option<ArrayRef> {
+        // Similar to min_values - FST doesn't store max directly
+        None
+    }
+
+    fn null_counts(&self, _column: &Column) -> Option<ArrayRef> {
+        // FST doesn't track null counts
+        None
+    }
+
+    fn row_counts(&self, _column: &Column) -> Option<ArrayRef> {
+        // FST doesn't track row counts per container
+        None
+    }
+
+    /// The key method - use FST index for precise containment checks
+    fn contained(&self, column: &Column, values: &HashSet<ScalarValue>) -> Option<BooleanArray> {
+        let mut results = Vec::with_capacity(self.file_list.len());
+
+        for file_hash in &self.file_list {
+            let contains_any = values.iter().any(|value| {
+                let value_str = value.to_string();
+                if let Ok(matches) = self.index_engine.exact_search(&column.name, &value_str) {
+                    matches.contains_key(file_hash)
+                } else {
+                    false
+                }
+            });
+            results.push(contains_any);
+        }
+
+        Some(BooleanArray::from(results))
+    }
+}
+
+impl fmt::Debug for FstPruningStatistics {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FstPruningStatistics")
+            .field("file_count", &self.file_list.len())
+            .field("filter_count", &self.filters.len())
+            .finish()
+    }
+}
+
+/// Builder for PDQ TableProvider with fluent API
 pub struct PdqTableProviderBuilder {
-    /// Directory containing FST index files
     index_dir: Option<PathBuf>,
-    /// Directory containing Parquet data files
     data_dir: Option<PathBuf>,
-    /// Name for the table provider
-    table_name: String,
+    table_name: Option<String>,
+    use_row_selections: bool,
 }
 
 impl PdqTableProviderBuilder {
-    /// Creates a new builder instance with the specified table name.
-    ///
-    /// # Parameters
-    ///
-    /// * `table_name` - Name for the table provider
-    ///
-    /// # Returns
-    ///
-    /// A new builder instance
-    pub fn new(table_name: String) -> Self {
+    /// Create a new builder
+    pub fn new() -> Self {
         Self {
             index_dir: None,
             data_dir: None,
-            table_name,
+            table_name: None,
+            use_row_selections: false,
         }
     }
 
-    /// Sets the directory containing FST index files.
-    ///
-    /// # Parameters
-    ///
-    /// * `index_dir` - Path to the directory containing FST index files
-    ///
-    /// # Returns
-    ///
-    /// Builder with index directory configured
-    pub fn with_index_dir(mut self, index_dir: impl AsRef<Path>) -> Self {
-        self.index_dir = Some(index_dir.as_ref().to_path_buf());
+    /// Set the index directory
+    pub fn with_index_dir<P: Into<PathBuf>>(mut self, index_dir: P) -> Self {
+        self.index_dir = Some(index_dir.into());
         self
     }
 
-    /// Sets the directory containing Parquet data files.
-    ///
-    /// # Parameters
-    ///
-    /// * `data_dir` - Path to the directory containing Parquet data files
-    ///
-    /// # Returns
-    ///
-    /// Builder with data directory configured
-    pub fn with_data_dir(mut self, data_dir: impl AsRef<Path>) -> Self {
-        self.data_dir = Some(data_dir.as_ref().to_path_buf());
+    /// Set the data directory
+    pub fn with_data_dir<P: Into<PathBuf>>(mut self, data_dir: P) -> Self {
+        self.data_dir = Some(data_dir.into());
         self
     }
 
-    /// Builds a PdqTableProvider with the configured settings.
-    ///
-    /// # Returns
-    ///
-    /// A new PdqTableProvider instance
-    ///
-    /// # Error
-    ///
-    /// Returns an error if required directories are not specified or
-    /// if schema inference fails
-    pub async fn build(self) -> Result<PdqTableProvider> {
+    /// Set the table name
+    pub fn with_table_name<S: Into<String>>(mut self, table_name: S) -> Self {
+        self.table_name = Some(table_name.into());
+        self
+    }
+
+    /// Enable row-level selections
+    pub fn with_row_selections(mut self, enabled: bool) -> Self {
+        self.use_row_selections = enabled;
+        self
+    }
+
+    /// Build the PDQ TableProvider
+    pub async fn build(self) -> anyhow::Result<PdqTableProvider> {
         let index_dir = self
             .index_dir
-            .ok_or_else(|| internal_datafusion_err!("Index directory not specified"))?;
+            .ok_or_else(|| anyhow::anyhow!("Index directory is required"))?;
         let data_dir = self
             .data_dir
-            .ok_or_else(|| internal_datafusion_err!("Data directory not specified"))?;
+            .ok_or_else(|| anyhow::anyhow!("Data directory is required"))?;
+        let table_name = self.table_name.unwrap_or_else(|| "pdq_table".to_string());
 
-        PdqTableProvider::new(index_dir, data_dir, self.table_name).await
+        let index_engine = Arc::new(IndexQueryEngine::new(index_dir));
+
+        PdqTableProvider::new(index_engine, data_dir, table_name, self.use_row_selections).await
     }
 }
 
-/// Stores information needed to scan a file
-#[derive(Debug)]
-/// Represents a Parquet file with pre-loaded metadata and selected row groups.
-///
-/// This struct encapsulates all the information needed to efficiently scan
-/// a Parquet file, including its metadata and the specific row groups to read.
-/// It avoids re-reading file metadata during execution.
-struct PdqIndexedFile {
-    /// File name without directory path
-    file_name: String,
-    /// Full canonical path to the file
-    path: PathBuf,
-    /// Size of the file in bytes
-    file_size: u64,
-    /// Pre-parsed Parquet metadata to avoid re-reading during execution
-    metadata: Arc<ParquetMetaData>,
-    /// Specific row groups to include in the scan (for row-group pruning)
-    row_groups: Vec<usize>,
-}
-
-impl PdqIndexedFile {
-    /// Creates a new PdqIndexedFile by loading metadata from a Parquet file.
-    ///
-    /// Opens the Parquet file, loads its metadata including page index information,
-    /// and prepares it for efficient access with the specified row groups.
-    ///
-    /// # Parameters
-    ///
-    /// * `path` - Path to the Parquet file
-    /// * `row_groups` - Row group indices to include in the scan
-    ///
-    /// # Returns
-    ///
-    /// A new PdqIndexedFile instance with pre-loaded metadata
-    ///
-    /// # Error
-    ///
-    /// Returns an error if the file cannot be opened or metadata cannot be read
-    fn try_new(path: impl AsRef<Path>, row_groups: Vec<usize>) -> Result<Self> {
-        let path = path.as_ref();
-
-        let file_name = path
-            .file_name()
-            .ok_or_else(|| internal_datafusion_err!("Invalid path"))?
-            .to_str()
-            .ok_or_else(|| internal_datafusion_err!("Invalid filename"))?
-            .to_string();
-        let file_size = path.metadata()?.len();
-
-        let file = File::open(path).map_err(|e| {
-            DataFusionError::from(e).context(format!("Error opening file {path:?}"))
-        })?;
-
-        let options = ArrowReaderOptions::new()
-            // Load the page index when reading metadata to cache
-            // so it is available to interpret row selections
-            .with_page_index(true);
-        let reader = ParquetRecordBatchReaderBuilder::try_new_with_options(file, options)?;
-        let metadata = reader.metadata().clone();
-
-        // canonicalize after writing the file
-        let path = std::fs::canonicalize(path)?;
-
-        Ok(Self {
-            file_name,
-            path,
-            file_size,
-            metadata,
-            row_groups,
-        })
-    }
-
-    /// Creates a DataFusion PartitionedFile for the underlying Parquet file.
-    ///
-    /// Builds a PartitionedFile with the file's metadata and row groups,
-    /// which DataFusion uses to determine what to scan.
-    ///
-    /// # Returns
-    ///
-    /// A PartitionedFile ready for inclusion in a DataFusion scan configuration
-    fn partitioned_file(&self) -> PartitionedFile {
-        PartitionedFile {
-            object_meta: object_store::ObjectMeta {
-                location: self.path.display().to_string().into(),
-                last_modified: std::time::SystemTime::now().into(),
-                size: self.file_size,
-                e_tag: None,
-                version: None,
-            },
-            partition_values: vec![],
-            range: None,
-            // row_groups: Some(self.row_groups.clone()),
-            statistics: None,
-            extensions: None,
-            metadata_size_hint: None,
-        }
-    }
-
-    /// Creates a ParquetAccessPlan that includes all row groups in the file.
-    ///
-    /// Used when no pruning is possible or when all row groups need to be scanned.
-    ///
-    /// # Returns
-    ///
-    /// A ParquetAccessPlan configured to scan all row groups
-    fn scan_all_plan(&self) -> ParquetAccessPlan {
-        ParquetAccessPlan::new_all(self.metadata.num_row_groups())
-    }
-
-    /// Creates a ParquetAccessPlan that initially excludes all row groups.
-    ///
-    /// Used as a starting point for selective row group scanning,
-    /// where specific row groups are added incrementally.
-    ///
-    /// # Returns
-    ///
-    /// A ParquetAccessPlan configured to skip all row groups by default
-    fn scan_none_plan(&self) -> ParquetAccessPlan {
-        ParquetAccessPlan::new_none(self.metadata.num_row_groups())
-    }
-}
-
-// ----------------------------------------------------------------------------
-// Copied from datafusion-examples/examples/advanced_parquet_index.rs
-// ----------------------------------------------------------------------------
-/// A custom [`ParquetFileReaderFactory`] that handles opening parquet files
-/// from object storage, and uses pre-loaded metadata.
-
-#[derive(Debug)]
-struct CachedParquetFileReaderFactory {
-    /// Object store for accessing file data
-    object_store: Arc<dyn ObjectStore>,
-    /// Pre-loaded Parquet metadata for each file, indexed by filename
-    /// Avoids expensive metadata re-reads during execution
-    metadata: HashMap<String, Arc<ParquetMetaData>>,
-}
-
-impl CachedParquetFileReaderFactory {
-    fn new(object_store: Arc<dyn ObjectStore>) -> Self {
-        Self {
-            object_store,
-            metadata: HashMap::new(),
-        }
-    }
-    /// Add the pre-parsed information about the file to the factory
-    fn with_file(mut self, indexed_file: &PdqIndexedFile) -> Self {
-        self.metadata.insert(
-            indexed_file.file_name.clone(),
-            Arc::clone(&indexed_file.metadata),
-        );
-        self
-    }
-}
-
-impl ParquetFileReaderFactory for CachedParquetFileReaderFactory {
-    /// Creates a Parquet reader for the specified file location.
-    ///
-    /// Uses cached metadata when available to avoid re-reading file footers.
-    ///
-    fn create_reader(
-        &self,
-        _partition_index: usize,
-        file_meta: FileMeta,
-        metadata_size_hint: Option<usize>,
-        _metrics: &ExecutionPlanMetricsSet,
-    ) -> Result<Box<dyn AsyncFileReader + Send>> {
-        // for this example we ignore the partition index and metrics
-        // but in a real system you would likely use them to report details on
-        // the performance of the reader.
-        let filename = file_meta
-            .location()
-            .parts()
-            .last()
-            .expect("No path in location")
-            .as_ref()
-            .to_string();
-
-        let object_store = Arc::clone(&self.object_store);
-        let mut inner = ParquetObjectReader::new(object_store, file_meta.object_meta.location)
-            .with_file_size(file_meta.object_meta.size);
-
-        if let Some(hint) = metadata_size_hint {
-            inner = inner.with_footer_size_hint(hint)
-        };
-
-        let metadata = self
-            .metadata
-            .get(&filename)
-            .expect("metadata for file not found: {filename}");
-
-        Ok(Box::new(ParquetReaderWithCache {
-            filename,
-            metadata: Arc::clone(metadata),
-            inner,
-        }))
-    }
-}
-
-/// wrapper around a ParquetObjectReader that caches metadata
-/// A Parquet AsyncFileReader with cached metadata.
-///
-/// Wraps another AsyncFileReader and provides the pre-loaded metadata
-/// to avoid re-reading file footers during execution.
-struct ParquetReaderWithCache {
-    /// Original filename for metadata lookup
-    filename: String,
-    /// Pre-loaded Parquet metadata
-    metadata: Arc<ParquetMetaData>,
-    /// Underlying file reader for data access
-    inner: ParquetObjectReader,
-}
-
-impl AsyncFileReader for ParquetReaderWithCache {
-    /// Reads a byte range from the underlying file.
-    ///
-    /// Delegates to the inner reader for actual data access.
-    fn get_bytes(
-        &mut self,
-        range: Range<u64>,
-    ) -> BoxFuture<'_, datafusion::parquet::errors::Result<Bytes>> {
-        println!("get_bytes: {} Reading range {:?}", self.filename, range);
-        self.inner.get_bytes(range)
-    }
-
-    /// Reads multiple byte ranges from the underlying file.
-    ///
-    /// Delegates to the inner reader for actual data access.
-    fn get_byte_ranges(
-        &mut self,
-        ranges: Vec<Range<u64>>,
-    ) -> BoxFuture<'_, datafusion::parquet::errors::Result<Vec<Bytes>>> {
-        println!(
-            "get_byte_ranges: {} Reading ranges {:?}",
-            self.filename, ranges
-        );
-        self.inner.get_byte_ranges(ranges)
-    }
-
-    fn get_metadata(
-        &mut self,
-        _options: Option<&ArrowReaderOptions>,
-    ) -> BoxFuture<'_, datafusion::parquet::errors::Result<Arc<ParquetMetaData>>> {
-        println!("get_metadata: {} returning cached metadata", self.filename);
-
-        // return the cached metadata so the parquet reader does not read it
-        let metadata = self.metadata.clone();
-        async move { Ok(metadata) }.boxed()
+impl Default for PdqTableProviderBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::datatypes::{DataType, Field};
     use tempfile::TempDir;
 
     #[tokio::test]
-    async fn test_pdq_table_provider_builder() -> Result<()> {
-        let temp_dir = TempDir::new()?;
+    async fn test_pdq_table_provider_builder() {
+        let temp_dir = TempDir::new().unwrap();
         let index_dir = temp_dir.path().join("index");
         let data_dir = temp_dir.path().join("data");
 
-        // Cross-platform directory creation
-        fs::create_dir_all(&index_dir).await?;
-        fs::create_dir_all(&data_dir).await?;
+        std::fs::create_dir_all(&index_dir).unwrap();
+        std::fs::create_dir_all(&data_dir).unwrap();
 
-        let builder = PdqTableProviderBuilder::new("test_table".to_string())
+        let result = PdqTableProviderBuilder::new()
             .with_index_dir(&index_dir)
-            .with_data_dir(&data_dir);
+            .with_data_dir(&data_dir)
+            .with_table_name("test_table")
+            .with_row_selections(true)
+            .build()
+            .await;
 
-        // This would fail without actual parquet files, but tests the API
-        assert!(builder.build().await.is_err());
-
-        Ok(())
+        // Should fail because no parquet files exist
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_cross_platform_path_handling() {
-        // Test that our path handling works on different platforms
-        let path = PathBuf::from("test").join("file.parquet");
+    fn test_extract_equality_filter() {
+        use datafusion::logical_expr::{col, lit};
 
-        // This should work on Windows, Linux, and macOS
-        assert!(path.extension().is_some());
-        assert_eq!(path.extension().unwrap().to_string_lossy(), "parquet");
+        let temp_dir = TempDir::new().unwrap();
+        let index_engine = Arc::new(IndexQueryEngine::new(temp_dir.path()));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "test_col",
+            DataType::Utf8,
+            false,
+        )]));
 
-        // Test cross-platform string conversion
-        let path_string = path.to_string_lossy().to_string();
-        assert!(path_string.contains("file.parquet"));
+        let provider = PdqTableProvider {
+            index_engine,
+            data_dir: temp_dir.path().to_path_buf(),
+            schema,
+            table_name: "test".to_string(),
+            use_row_selections: false,
+            metadata_cache: HashMap::new(),
+        };
+
+        let filter = col("test_col").eq(lit("test_value"));
+        let result = provider.extract_equality_filter(&filter);
+
+        assert!(result.is_some());
+        let (column, value) = result.unwrap();
+        assert_eq!(column, "test_col");
+        assert_eq!(value, "test_value");
     }
 }

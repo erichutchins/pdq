@@ -1,4 +1,5 @@
-use crate::{Result, SearchResult};
+use crate::SearchResult;
+use anyhow::Result;
 use fst::{IntoStreamer, Set, Streamer};
 use memmap2::Mmap;
 use rayon::prelude::*;

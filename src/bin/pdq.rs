@@ -212,7 +212,8 @@ async fn main() -> Result<()> {
             }
 
             // Create the PdqTableProvider using the builder
-            let table_provider = PdqTableProviderBuilder::new("pdq_table".to_string())
+            let table_provider = PdqTableProviderBuilder::new()
+                .with_table_name("pdq_table")
                 .with_index_dir(index_dir)
                 .with_data_dir(data_path)
                 .build()

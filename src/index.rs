@@ -1,4 +1,5 @@
-use crate::{calculate_file_hash, Result};
+use crate::calculate_file_hash;
+use anyhow::Result;
 use fst::SetBuilder;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::reader::{FileReader, SerializedFileReader};

@@ -20,7 +20,7 @@ clap = { version = "4.0", features = ["derive"] }
 env_logger = "0.10"
 fst = "0.4.7"
 rayon = "1.10"
-tokio = { version = "1.46", features = ["rt-multi-thread", "macros", "fs"] }
+tokio = { version = "1.47.1", features = ["rt-multi-thread", "macros", "fs"] }
 # PyO3 dependencies for Python bindings
 pyo3 = { version = "0.25.1", features = ["extension-module", "abi3-py310"] }
 pyo3-async-runtimes = { version = "0.25", features = ["tokio-runtime"] }
@@ -28,9 +28,12 @@ pyo3-async-runtimes-macros = { version = "0.25" }
 datafusion = { default-features = false, features = [
     "parquet",
 ], version = "49.0.0" }
+datafusion-common = "49.0.0"
+datafusion-physical-expr = "49.0.0"
+datafusion-expr = "49.0.0"
 # ], git = "https://github.com/apache/datafusion.git", rev = "de8cbd0ab606bec6eb3ea082fa61f09aa16874eb" }
 # For Polars integration
-polars = { version = "0.49.1", features = ["lazy", "parquet", "ipc"] }
+polars = { version = "0.50", features = ["lazy", "parquet", "ipc"] }
 walkdir = "2.5"
 memmap2 = "0.9"
 futures = "0.3"

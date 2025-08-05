@@ -6,8 +6,7 @@ pub mod search;
 #[cfg(feature = "pyo3")]
 mod py_module;
 
-use anyhow::Result;
-pub use provider::PdqTableProviderBuilder;
+pub use provider::{PdqTableProvider, PdqTableProviderBuilder};
 
 #[derive(Debug, Clone)]
 pub struct SearchResult {
@@ -15,7 +14,7 @@ pub struct SearchResult {
     pub row_group: usize,
 }
 
-pub fn calculate_file_hash(file_path: &str) -> Result<String> {
+pub fn calculate_file_hash(file_path: &str) -> anyhow::Result<String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
