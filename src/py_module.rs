@@ -1,18 +1,12 @@
 use crate::index::Indexer as RustIndexer;
-use crate::query::IndexQueryEngine;
 use crate::search::Searcher as RustSearcher;
 use crate::{PdqTableProviderBuilder, SearchResult as RustSearchResult};
-use anyhow::Result;
-use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::pyarrow::PyArrowType;
-use datafusion::arrow::record_batch::RecordBatchIterator;
-use datafusion::dataframe::DataFrame;
+use arrow_pyarrow::PyArrowType;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::{col, lit};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
-use pyo3_asyncio::tokio::future_into_py;
+use pyo3_async_runtimes::tokio::future_into_py;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -103,8 +97,8 @@ impl Searcher {
 /// QueryEngine: Executes queries against Parquet files using FST indices
 #[pyclass]
 pub struct QueryEngine {
-    index_dir: String,
-    data_dir: String,
+    index_dir: Arc<str>,
+    data_dir: Arc<str>,
 }
 
 #[pymethods]
@@ -113,13 +107,13 @@ impl QueryEngine {
     #[new]
     fn new(index_dir: &str, data_dir: &str) -> Self {
         Self {
-            index_dir: index_dir.to_string(),
-            data_dir: data_dir.to_string(),
+            index_dir: index_dir.into(),
+            data_dir: data_dir.into(),
         }
     }
 
     /// Query Parquet files for records matching a specific value in a column
-    fn query<'py>(&self, column: &str, term: &str, py: Python<'py>) -> PyResult<&'py PyAny> {
+    fn query<'py>(&self, column: &str, term: &str, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let index_dir = self.index_dir.clone();
         let data_dir = self.data_dir.clone();
         let column = column.to_string();
@@ -127,108 +121,116 @@ impl QueryEngine {
 
         future_into_py(py, async move {
             // First check if there are any matches using the Searcher
-            let searcher = RustSearcher::new(&index_dir);
-            let results = searcher.exact_search(&column, &term)?;
+            let searcher = RustSearcher::new(index_dir.as_ref());
+            let results = searcher
+                .exact_search(&column, &term)
+                .map_err(|e| PyRuntimeError::new_err(format!("Search failed: {}", e)))?;
 
             if results.is_empty() {
                 // No matches found, return None
-                return Ok(None);
+                return Python::with_gil(|py| Ok(py.None()));
             }
 
             // Create the PdqTableProvider
-            let table_provider = PdqTableProviderBuilder::new("pdq_query".to_string())
-                .with_index_dir(&index_dir)
-                .with_data_dir(&data_dir)
+            let table_provider = PdqTableProviderBuilder::new()
+                .with_index_dir(&*index_dir)
+                .with_data_dir(&*data_dir)
                 .build()
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to create table provider: {}", e))?;
+                .map_err(|e| {
+                    PyRuntimeError::new_err(format!("Failed to create table provider: {}", e))
+                })?;
 
             // Create a new DataFusion context
             let ctx = SessionContext::new();
             ctx.register_table("pdq_data", Arc::new(table_provider))
-                .map_err(|e| anyhow::anyhow!("Failed to register table: {}", e))?;
+                .map_err(|e| PyRuntimeError::new_err(format!("Failed to register table: {}", e)))?;
 
             // Build and execute the query
             let df = ctx
                 .table("pdq_data")
-                .map_err(|e| anyhow::anyhow!("Failed to get table: {}", e))?
+                .await
+                .map_err(|e| PyRuntimeError::new_err(format!("Failed to get table: {}", e)))?
                 .filter(col(&column).eq(lit(term.clone())))
-                .map_err(|e| anyhow::anyhow!("Failed to build filter: {}", e))?;
+                .map_err(|e| PyRuntimeError::new_err(format!("Failed to build filter: {}", e)))?;
 
             // Execute the query and convert to RecordBatch
             let results = df
                 .collect()
                 .await
-                .map_err(|e| anyhow::anyhow!("Query execution failed: {}", e))?;
+                .map_err(|e| PyRuntimeError::new_err(format!("Query execution failed: {}", e)))?;
 
             if results.is_empty() {
-                return Ok(None);
+                return Python::with_gil(|py| Ok(py.None()));
             }
 
-            // Convert to PyArrow table
-            let schema = results[0].schema();
-            let iter = RecordBatchIterator::new(results.into_iter().map(Ok), schema);
-            let table = iter
-                .collect::<Result<_>>()
-                .map_err(|e| anyhow::anyhow!("Failed to convert to table: {}", e))?;
+            // Pass record batches directly to PyArrow for zero-copy conversion
+            // We avoid concatenating batches to maintain zero-copy semantics
 
-            Ok(Some(PyArrowType::from_arrow(&table)))
+            // Create a table from record batches - PyArrow will handle this efficiently
+            Python::with_gil(|py| {
+                // Convert the Vec<RecordBatch> to PyArrow
+                // This leverages zero-copy when passing to Python
+                let py_batches = PyArrowType(results);
+                Ok(py_batches.into_pyobject(py)?.into_any().unbind())
+            })
         })
-        .map_err(|e| PyRuntimeError::new_err(format!("Query failed: {}", e)))
     }
 
     /// Execute a SQL query against the indexed data
-    fn sql_query<'py>(&self, sql: &str, py: Python<'py>) -> PyResult<&'py PyAny> {
+    fn sql_query<'py>(&self, sql: &str, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let index_dir = self.index_dir.clone();
         let data_dir = self.data_dir.clone();
         let sql = sql.to_string();
 
         future_into_py(py, async move {
             // Create the PdqTableProvider
-            let table_provider = PdqTableProviderBuilder::new("pdq_data".to_string())
-                .with_index_dir(&index_dir)
-                .with_data_dir(&data_dir)
+            let table_provider = PdqTableProviderBuilder::new()
+                .with_index_dir(&*index_dir)
+                .with_data_dir(&*data_dir)
                 .build()
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to create table provider: {}", e))?;
+                .map_err(|e| {
+                    PyRuntimeError::new_err(format!("Failed to create table provider: {}", e))
+                })?;
 
             // Create a new DataFusion context
             let ctx = SessionContext::new();
             ctx.register_table("pdq_data", Arc::new(table_provider))
-                .map_err(|e| anyhow::anyhow!("Failed to register table: {}", e))?;
+                .map_err(|e| PyRuntimeError::new_err(format!("Failed to register table: {}", e)))?;
 
             // Execute the SQL query
             let df = ctx
                 .sql(&sql)
                 .await
-                .map_err(|e| anyhow::anyhow!("SQL query failed: {}", e))?;
+                .map_err(|e| PyRuntimeError::new_err(format!("SQL query failed: {}", e)))?;
 
             // Collect results
-            let results = df
-                .collect()
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to collect results: {}", e))?;
+            let results = df.collect().await.map_err(|e| {
+                PyRuntimeError::new_err(format!("Failed to collect results: {}", e))
+            })?;
 
             if results.is_empty() {
-                return Ok(None);
+                return Python::with_gil(|py| Ok(py.None()));
             }
 
-            // Convert to PyArrow table
-            let schema = results[0].schema();
-            let iter = RecordBatchIterator::new(results.into_iter().map(Ok), schema);
-            let table = iter
-                .collect::<Result<_>>()
-                .map_err(|e| anyhow::anyhow!("Failed to convert to table: {}", e))?;
+            // Pass record batches directly to PyArrow for zero-copy conversion
+            // We avoid concatenating batches to maintain zero-copy semantics
 
-            Ok(Some(PyArrowType::from_arrow(&table)))
+            // Create a table from record batches - PyArrow will handle this efficiently
+            Python::with_gil(|py| {
+                // Convert the Vec<RecordBatch> to PyArrow
+                // This leverages zero-copy when passing to Python
+                let py_batches = PyArrowType(results);
+                Ok(py_batches.into_pyobject(py)?.into_any().unbind())
+            })
         })
-        .map_err(|e| PyRuntimeError::new_err(format!("SQL query failed: {}", e)))
     }
 }
 
 /// PDQ Python module
 #[pymodule]
-fn pdq(py: Python, m: &PyModule) -> PyResult<()> {
+fn pdq(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Indexer>()?;
     m.add_class::<Searcher>()?;
     m.add_class::<QueryEngine>()?;

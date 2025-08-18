@@ -3,7 +3,7 @@ pub mod provider;
 pub mod query;
 pub mod search;
 
-#[cfg(feature = "pyo3")]
+// #[cfg(feature = "pyo3")]
 mod py_module;
 
 pub use provider::{PdqTableProvider, PdqTableProviderBuilder};

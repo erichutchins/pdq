@@ -2,8 +2,10 @@
 name = "pdq"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/erichutchins/pdq"
+readme = "README.md"
 
-# Add PyO3 configuration for Python bindings
 [lib]
 name = "pdq"
 crate-type = ["cdylib", "rlib"]
@@ -12,46 +14,45 @@ crate-type = ["cdylib", "rlib"]
 name = "pdq"
 path = "src/bin/pdq.rs"
 
-
 [dependencies]
 arrow = "55.2.0"
+arrow-pyarrow = "55.2.0"
 async-trait = "0.1"
 clap = { version = "4.0", features = ["derive"] }
-env_logger = "0.10"
 fst = "0.4.7"
 rayon = "1.10"
 tokio = { version = "1.47.1", features = ["rt-multi-thread", "macros", "fs"] }
 # PyO3 dependencies for Python bindings
-pyo3 = { version = "0.25.1", features = ["extension-module", "abi3-py310"] }
-pyo3-async-runtimes = { version = "0.25", features = ["tokio-runtime"] }
-pyo3-async-runtimes-macros = { version = "0.25" }
+pyo3 = { version = "0.24", features = [
+    "extension-module",
+    "abi3-py39",
+    "anyhow",
+] }
+pyo3-async-runtimes = { version = "0.24", features = ["tokio-runtime"] }
+pyo3-async-runtimes-macros = { version = "0.24" }
 datafusion = { default-features = false, features = [
     "parquet",
 ], version = "49.0.0" }
 datafusion-common = "49.0.0"
 datafusion-physical-expr = "49.0.0"
 datafusion-expr = "49.0.0"
-# ], git = "https://github.com/apache/datafusion.git", rev = "de8cbd0ab606bec6eb3ea082fa61f09aa16874eb" }
-# For Polars integration
-polars = { version = "0.50", features = ["lazy", "parquet", "ipc"] }
 walkdir = "2.5"
 memmap2 = "0.9"
 futures = "0.3"
 parquet = { version = "55.2.0", default-features = false, features = [
     "arrow",
     "async",
-    "object_store",
-    "encryption",
-    "snap",
-    "flate2",
-    "zstd",
-    "lz4",
     "brotli",
+    "encryption",
+    "flate2",
+    "lz4",
+    "object_store",
+    "snap",
+    "zstd",
 ] }
 object_store = "0.12"
 bytes = "1.10"
 anyhow = "1.0.98"
-tracing = "0.1.41"
 
 
 [dev-dependencies]

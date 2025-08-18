@@ -296,9 +296,7 @@ impl TableProvider for PdqTableProvider {
 
                 // Enable scanning only for the row groups that contain our target values
                 for &row_group_idx in row_groups {
-                    if row_group_idx < total_row_groups {
-                        access_plan.scan(row_group_idx);
-                    }
+                    access_plan.scan(row_group_idx);
                 }
 
                 // Create partitioned file with the access plan

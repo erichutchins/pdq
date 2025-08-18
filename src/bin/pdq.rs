@@ -14,7 +14,7 @@ use std::time::Instant;
 #[tokio::main]
 async fn main() -> Result<()> {
     let matches = Command::new("pdq")
-        .version("0.1.0")
+        .version(env!("CARGO_PKG_VERSION"))
         .about("FST-based Parquet indexing and querying tool")
         .subcommand(
             Command::new("index")
