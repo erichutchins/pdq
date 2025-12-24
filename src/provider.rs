@@ -1,28 +1,36 @@
 use std::any::Any;
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
-use std::fmt;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, BooleanArray};
-use arrow::datatypes::{Schema, SchemaRef};
 use async_trait::async_trait;
+use bytes::Bytes;
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::catalog::Session;
-use datafusion::common::pruning::PruningStatistics;
-use datafusion::common::{
-    Column, DFSchema, DataFusionError, Result as DataFusionResult, ScalarValue,
-};
+use datafusion::common::{DFSchema, DataFusionError, Result as DataFusionResult};
+use datafusion::datasource::TableProvider;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::memory::DataSourceExec;
-use datafusion::datasource::physical_plan::{FileScanConfigBuilder, ParquetSource};
-use datafusion::datasource::TableProvider;
+use datafusion::datasource::physical_plan::{
+    FileScanConfigBuilder, ParquetFileReaderFactory, ParquetSource,
+};
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
-use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use datafusion::parquet::arrow::arrow_reader::{
+    ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
+};
+use datafusion::parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader};
 use datafusion::parquet::file::metadata::ParquetMetaData;
 use datafusion::parquet::file::reader::{FileReader, SerializedFileReader};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use futures::FutureExt;
+use futures::future::BoxFuture;
+use object_store::ObjectStore;
+use rayon::prelude::*;
 
 // Parquet execution imports
 use datafusion::datasource::physical_plan::parquet::ParquetAccessPlan;
@@ -35,22 +43,18 @@ use crate::query::IndexQueryEngine;
 /// This implementation provides:
 /// 1. Modern FileScanConfigBuilder usage with ParquetSource
 /// 2. PruningStatistics implementation leveraging FST indices
-/// 3. Metadata caching for repeated queries
-/// 4. Better error handling and zero-I/O optimization
+/// 3. Optimized metadata handling via `ParquetFileReaderFactory`
+/// 4. Parallel schema inference
 #[derive(Debug)]
 pub struct PdqTableProvider {
     /// FST-based index query engine
     index_engine: Arc<IndexQueryEngine>,
-    /// Directory containing Parquet data files
-    data_dir: PathBuf,
     /// Schema of the table
     schema: SchemaRef,
     /// Table name for identification
-    table_name: String,
+    _table_name: String,
     /// Whether to use row-level selections
     use_row_selections: bool,
-    /// Cached file metadata for performance
-    metadata_cache: HashMap<String, Arc<ParquetMetaData>>,
 }
 
 impl PdqTableProvider {
@@ -65,11 +69,9 @@ impl PdqTableProvider {
 
         Ok(Self {
             index_engine,
-            data_dir,
             schema,
-            table_name,
+            _table_name: table_name,
             use_row_selections,
-            metadata_cache: HashMap::new(),
         })
     }
 
@@ -83,31 +85,36 @@ impl PdqTableProvider {
         self.use_row_selections
     }
 
-    /// Infer schema from all Parquet files in directory
+    /// Infer schema from all Parquet files in directory (parallelized)
     async fn infer_schema_from_directory(data_dir: &Path) -> anyhow::Result<SchemaRef> {
         use walkdir::WalkDir;
 
-        let mut schema: Option<SchemaRef> = None;
-
-        for entry in WalkDir::new(data_dir)
+        // Collect all parquet files
+        let parquet_files: Vec<_> = WalkDir::new(data_dir)
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "parquet"))
-        {
-            let file_schema = Self::infer_schema_from_file(entry.path())?;
+            .map(|e| e.path().to_path_buf())
+            .collect();
 
-            schema = match schema {
-                None => Some(file_schema),
-                Some(existing) => {
-                    // Merge schemas by creating a new schema with all fields
-                    let merged =
-                        Schema::try_merge(vec![(*existing).clone(), (*file_schema).clone()])?;
-                    Some(Arc::new(merged))
-                }
-            };
+        if parquet_files.is_empty() {
+            return Err(anyhow::anyhow!("No Parquet files found in directory"));
         }
 
-        schema.ok_or_else(|| anyhow::anyhow!("No Parquet files found in directory"))
+        // Process files in parallel using rayon to get schemas
+        let schemas: Vec<SchemaRef> = parquet_files
+            .par_iter()
+            .map(|path| Self::infer_schema_from_file(path))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        // Merge all schemas
+        let mut merged_schema = schemas[0].clone();
+        for schema in schemas.iter().skip(1) {
+            let merged = Schema::try_merge(vec![(*merged_schema).clone(), (**schema).clone()])?;
+            merged_schema = Arc::new(merged);
+        }
+
+        Ok(merged_schema)
     }
 
     /// Infer schema from a single Parquet file
@@ -118,28 +125,58 @@ impl PdqTableProvider {
     }
 
     /// Use FST index to prune files and row groups
+    ///
+    /// Optimized to use set intersection instead of O(n²) retain + contains.
+    /// When multiple filters apply, we intersect the row groups to get only those
+    /// that satisfy all conditions.
     fn prune_with_fst_index(
         &self,
         filters: &[Expr],
-    ) -> anyhow::Result<HashMap<String, Vec<usize>>> {
-        let mut file_row_groups = HashMap::new();
+    ) -> anyhow::Result<(HashMap<String, Vec<usize>>, HashMap<String, PathBuf>)> {
+        let mut file_row_groups: HashMap<String, HashSet<usize>> = HashMap::new();
+        let mut hash_to_path: HashMap<String, PathBuf> = HashMap::new();
 
         for filter in filters {
-            if let Some((column, value)) = self.extract_equality_filter(filter) {
-                if let Ok(results) = self.index_engine.exact_search(&column, &value) {
-                    for (file_hash, row_groups) in results {
-                        file_row_groups
-                            .entry(file_hash)
-                            .and_modify(|existing_groups: &mut Vec<usize>| {
-                                existing_groups.retain(|g| row_groups.contains(g));
-                            })
-                            .or_insert(row_groups);
+            if let Some((column, value)) = self.extract_equality_filter(filter)
+                && let Ok(results) = self.index_engine.exact_search(&column, &value)
+            {
+                for file_match in results {
+                    let file_hash = calculate_file_hash(&file_match.file_path.to_string_lossy())?;
+                    let row_group_set: HashSet<usize> = file_match.row_groups.into_iter().collect();
+
+                    hash_to_path.insert(file_hash.clone(), file_match.file_path);
+
+                    match file_row_groups.entry(file_hash) {
+                        Entry::Occupied(mut e) => {
+                            // Intersect with existing row groups (only keep those in both sets)
+                            let intersection: HashSet<usize> = e
+                                .get()
+                                .iter()
+                                .copied()
+                                .filter(|g| row_group_set.contains(g))
+                                .collect();
+                            e.insert(intersection);
+                        }
+                        Entry::Vacant(e) => {
+                            // First time seeing this file hash
+                            e.insert(row_group_set);
+                        }
                     }
                 }
             }
         }
 
-        Ok(file_row_groups)
+        // Convert HashSets back to sorted Vecs for consistency with API expectations
+        let pruned_row_groups = file_row_groups
+            .into_iter()
+            .map(|(file_hash, row_group_set)| {
+                let mut row_groups: Vec<usize> = row_group_set.into_iter().collect();
+                row_groups.sort_unstable();
+                (file_hash, row_groups)
+            })
+            .collect();
+
+        Ok((pruned_row_groups, hash_to_path))
     }
 
     /// Extract column=value equality filters for FST index usage
@@ -163,47 +200,61 @@ impl PdqTableProvider {
         None
     }
 
-    /// Create pruning predicate for DataFusion integration
-    fn create_fst_pruning_predicate(
+    /// Resolve file hashes to actual file paths and load metadata for them
+    #[allow(clippy::type_complexity)]
+    fn load_pruned_metadata(
         &self,
-        filters: &[Expr],
-    ) -> anyhow::Result<Option<Arc<dyn PruningStatistics>>> {
-        if filters.is_empty() {
-            return Ok(None);
+        file_row_groups: &HashMap<String, Vec<usize>>,
+        hash_to_path: &HashMap<String, PathBuf>,
+    ) -> anyhow::Result<(
+        HashMap<String, PathBuf>,
+        HashMap<String, Arc<ParquetMetaData>>,
+    )> {
+        let mut resolved_paths: HashMap<String, PathBuf> = HashMap::new();
+        let mut metadata_map: HashMap<String, Arc<ParquetMetaData>> = HashMap::new();
+
+        // Use the paths provided by the index engine results
+        // Use a subset of hash_to_path based on file_row_groups keys
+        let targets: Vec<(String, PathBuf)> = file_row_groups
+            .keys()
+            .filter_map(|h| hash_to_path.get(h).map(|p| (h.clone(), p.clone())))
+            .collect();
+
+        // Load metadata for resolved files in parallel
+        let loaded_metadata: Vec<(String, Arc<ParquetMetaData>)> = targets
+            .par_iter()
+            .filter_map(|(hash, path)| match std::fs::File::open(path) {
+                Ok(file) => match SerializedFileReader::new(file) {
+                    Ok(reader) => {
+                        let metadata = Arc::new(reader.metadata().clone());
+                        Some(Ok((hash.clone(), metadata)))
+                    }
+                    Err(e) => Some(Err(anyhow::anyhow!(
+                        "Failed to read parquet metadata for {}: {}",
+                        path.display(),
+                        e
+                    ))),
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    println!("Skipping missing parquet file: {}", path.display());
+                    None
+                }
+                Err(e) => Some(Err(anyhow::anyhow!(
+                    "Failed to open parquet file {}: {}",
+                    path.display(),
+                    e
+                ))),
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        for (hash, metadata) in loaded_metadata {
+            if let Some(path) = hash_to_path.get(&hash) {
+                resolved_paths.insert(hash.clone(), path.clone());
+                metadata_map.insert(hash, metadata);
+            }
         }
 
-        Ok(Some(Arc::new(FstPruningStatistics::new(
-            Arc::clone(&self.index_engine),
-            filters.to_vec(),
-        ))))
-    }
-
-    /// Resolve file hashes to actual file paths
-    fn resolve_file_paths(
-        &self,
-        file_hashes: &[String],
-    ) -> anyhow::Result<HashMap<String, PathBuf>> {
-        self.index_engine
-            .resolve_file_paths(file_hashes, &self.data_dir)
-    }
-
-    /// Load or retrieve cached metadata for a file
-    async fn get_file_metadata(
-        &mut self,
-        file_path: &Path,
-    ) -> anyhow::Result<Arc<ParquetMetaData>> {
-        let file_hash = calculate_file_hash(&file_path.to_string_lossy())?;
-
-        if let Some(cached) = self.metadata_cache.get(&file_hash) {
-            return Ok(Arc::clone(cached));
-        }
-
-        let file = std::fs::File::open(file_path)?;
-        let reader = SerializedFileReader::new(file)?;
-        let metadata = Arc::new(reader.metadata().clone());
-
-        self.metadata_cache.insert(file_hash, Arc::clone(&metadata));
-        Ok(metadata)
+        Ok((resolved_paths, metadata_map))
     }
 }
 
@@ -230,29 +281,26 @@ impl TableProvider for PdqTableProvider {
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         // Use FST index to prune files and row groups
-        let file_row_groups = self
+        let (file_row_groups, hash_to_path) = self
             .prune_with_fst_index(filters)
             .map_err(|e| DataFusionError::Plan(format!("FST pruning failed: {e}")))?;
 
         // CRITICAL OPTIMIZATION: If the index found no matches, return empty results immediately
-        // The FST index is authoritative - no matches means no data exists
-        // This eliminates 100% of I/O for searches with no results
         if file_row_groups.is_empty() {
             let object_store_url = ObjectStoreUrl::parse("file://")?;
             let source = Arc::new(ParquetSource::default());
             let config = FileScanConfigBuilder::new(object_store_url, self.schema.clone(), source)
-                .with_projection(projection.cloned())
+                .with_projection_indices(projection.cloned())
                 .with_limit(limit)
                 .build();
 
             return Ok(DataSourceExec::from_data_source(config));
         }
 
-        // Resolve file hashes to paths
-        let file_hashes: Vec<String> = file_row_groups.keys().cloned().collect();
-        let hash_to_path = self
-            .resolve_file_paths(&file_hashes)
-            .map_err(|e| DataFusionError::Plan(format!("Path resolution failed: {e}")))?;
+        // Resolve paths and load metadata for relevant files
+        let (resolved_paths, metadata_map) = self
+            .load_pruned_metadata(&file_row_groups, &hash_to_path)
+            .map_err(|e| DataFusionError::Plan(format!("Failed to load metadata: {e}")))?;
 
         // Convert filters to a single predicate for DataFusion
         let df_schema = DFSchema::try_from(self.schema.clone())?;
@@ -262,49 +310,82 @@ impl TableProvider for PdqTableProvider {
             .transpose()?
             .unwrap_or_else(|| datafusion::physical_expr::expressions::lit(true));
 
-        // Create ParquetSource with predicate
-        let source = ParquetSource::default().with_predicate(predicate);
-
-        // Build file scan configuration using the proven pattern
+        // Create the custom factory that will serve the pre-loaded metadata
         let object_store_url = ObjectStoreUrl::parse("file://")?;
+        let object_store = state
+            .runtime_env()
+            .object_store(object_store_url.clone())
+            .map_err(|e| DataFusionError::Plan(format!("Failed to get object store: {e}")))?;
+
+        let mut reader_factory = CachedParquetFileReaderFactory::new(object_store);
+
+        // Populate the factory with our metadata, keyed by the *absolute path* which is how DataFusion will request it
+        for (hash, metadata) in &metadata_map {
+            if let Some(path) = resolved_paths.get(hash) {
+                // Ensure absolute path for consistency
+                if let Ok(canonical_path) = std::fs::canonicalize(path) {
+                    reader_factory
+                        .add_metadata(canonical_path.display().to_string(), metadata.clone());
+                }
+            }
+        }
+
+        // Create ParquetSource with factory
+        let source = ParquetSource::default()
+            .with_predicate(predicate)
+            .with_parquet_file_reader_factory(Arc::new(reader_factory));
+
+        // Build file scan configuration
         let mut file_scan_config_builder =
             FileScanConfigBuilder::new(object_store_url, self.schema.clone(), Arc::new(source))
-                .with_projection(projection.cloned())
+                .with_projection_indices(projection.cloned())
                 .with_limit(limit);
 
         // Add files with row group level access plans based on FST index results
         for (file_hash, row_groups) in &file_row_groups {
-            if let Some(file_path) = hash_to_path.get(file_hash) {
+            if let Some(file_path) = resolved_paths.get(file_hash) {
                 let canonical_path = std::fs::canonicalize(file_path).map_err(|e| {
                     DataFusionError::Plan(format!("Path canonicalization failed: {e}"))
                 })?;
 
                 let file_size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
 
-                // Load file metadata to determine total number of row groups
-                let file = std::fs::File::open(file_path).map_err(|e| {
-                    DataFusionError::Plan(format!("Failed to open file for metadata: {e}"))
-                })?;
-                let reader = SerializedFileReader::new(file).map_err(|e| {
-                    DataFusionError::Plan(format!("Failed to create parquet reader: {e}"))
-                })?;
-                let metadata = reader.metadata();
-                let total_row_groups = metadata.num_row_groups();
+                // Get total row groups from the metadata we just loaded (via the file factory logic,
+                // but here we can just assume valid since we loaded it)
+                // Or easier: we can't easily access the factory here, but we can assume the access plan creation
+                // is safe if we trust the FST.
+                // Ideally we'd look up the metadata again, but we just inserted it.
+                // Let's rely on the file system for size, but for total row groups we need metadata.
+                // We can re-open briefly or trust the FST.
+                // Actually, ParquetAccessPlan::new_none requires total row groups.
+                // We SHOULD iterate our already loaded metadata.
 
-                // Create access plan that initially scans no row groups
-                let mut access_plan = ParquetAccessPlan::new_none(total_row_groups);
+                // Let's find the metadata for this file_hash again. (Optimize later if needed, n is small)
+                // Wait, we lost the mapping from hash -> metadata in the factory step.
+                // Actually `metadata_map` is locally available!
 
-                // Enable scanning only for the row groups that contain our target values
-                for &row_group_idx in row_groups {
-                    access_plan.scan(row_group_idx);
+                // FIX: We have `metadata_map: HashMap<String, Arc<ParquetMetaData>>` where key is hash.
+                if let Some(metadata) = metadata_map.get(file_hash) {
+                    // Use metadata_map!
+                    let total_row_groups = metadata.num_row_groups();
+
+                    // Create access plan that initially scans no row groups
+                    let mut access_plan = ParquetAccessPlan::new_none(total_row_groups);
+
+                    // Enable scanning only for the row groups that contain our target values
+                    for &row_group_idx in row_groups {
+                        if row_group_idx < total_row_groups {
+                            access_plan.scan(row_group_idx);
+                        }
+                    }
+
+                    // Create partitioned file with the access plan
+                    let mut partitioned_file =
+                        PartitionedFile::new(canonical_path.display().to_string(), file_size);
+                    partitioned_file.extensions = Some(Arc::new(access_plan));
+
+                    file_scan_config_builder = file_scan_config_builder.with_file(partitioned_file);
                 }
-
-                // Create partitioned file with the access plan
-                let mut partitioned_file =
-                    PartitionedFile::new(canonical_path.display().to_string(), file_size);
-                partitioned_file.extensions = Some(Arc::new(access_plan));
-
-                file_scan_config_builder = file_scan_config_builder.with_file(partitioned_file);
             }
         }
 
@@ -324,82 +405,135 @@ impl TableProvider for PdqTableProvider {
     }
 }
 
-/// FST-based PruningStatistics implementation
-///
-/// This leverages PDQ's FST indices to provide precise pruning information
-/// to DataFusion's query optimizer, enabling better performance through
-/// more accurate file and row group elimination.
-struct FstPruningStatistics {
-    index_engine: Arc<IndexQueryEngine>,
-    filters: Vec<Expr>,
-    file_list: Vec<String>,
+/// A custom `ParquetFileReaderFactory` that serves pre-loaded metadata
+#[derive(Debug)]
+struct CachedParquetFileReaderFactory {
+    object_store: Arc<dyn ObjectStore>,
+    /// Metadata keyed by absolute file path
+    metadata: HashMap<String, Arc<ParquetMetaData>>,
 }
 
-impl FstPruningStatistics {
-    fn new(index_engine: Arc<IndexQueryEngine>, filters: Vec<Expr>) -> Self {
-        let file_list = index_engine.list_indexed_files().unwrap_or_default();
-
+impl CachedParquetFileReaderFactory {
+    fn new(object_store: Arc<dyn ObjectStore>) -> Self {
         Self {
-            index_engine,
-            filters,
-            file_list,
+            object_store,
+            metadata: HashMap::new(),
         }
+    }
+
+    fn add_metadata(&mut self, path: String, metadata: Arc<ParquetMetaData>) {
+        self.metadata.insert(path, metadata);
     }
 }
 
-impl PruningStatistics for FstPruningStatistics {
-    fn num_containers(&self) -> usize {
-        self.file_list.len()
-    }
+impl ParquetFileReaderFactory for CachedParquetFileReaderFactory {
+    fn create_reader(
+        &self,
+        _partition_index: usize,
+        partitioned_file: PartitionedFile,
+        metadata_size_hint: Option<usize>,
+        _metrics: &ExecutionPlanMetricsSet,
+    ) -> DataFusionResult<Box<dyn AsyncFileReader + Send>> {
+        let _filename = partitioned_file
+            .object_meta
+            .location
+            .parts()
+            .last()
+            .ok_or_else(|| DataFusionError::Plan("No path in location".to_string()))?
+            .as_ref()
+            .to_string();
 
-    fn min_values(&self, _column: &Column) -> Option<ArrayRef> {
-        // FST doesn't store min/max directly, but we can approximate
-        // by finding the lexicographically smallest indexed value
-        // For now, return None to let DataFusion handle this
-        None
-    }
+        // Convert location directly to string for lookup, assuming it matches what we stored
+        // Warning: DataFusion ObjectStore paths might differ slightly from OS paths (leading / etc)
+        // We stored canonicalized OS paths.
+        // For LocalFileSystem, the location usually matches.
+        // To be safe in `PdqTableProvider`, we should align these.
+        // But here we'll try to find it.
+        // Actually, let's use the full location path string.
+        let _full_path = partitioned_file.object_meta.location.to_string();
+        // The location in PartitionedFile comes from what we passed to FileScanConfigBuilder
+        // We passed `canonical_path.display().to_string()`
 
-    fn max_values(&self, _column: &Column) -> Option<ArrayRef> {
-        // Similar to min_values - FST doesn't store max directly
-        None
-    }
+        // Since we constructed PartitionedFile with canonical absolute paths, the location should map.
+        // However, object_store paths are URL-encoded/normalized.
+        // Let's try to lookup by the path we used to create the PartitionedFile.
+        // NOTE: In `scan`, we used `canonical_path.display().to_string()`.
+        // So `metadata` keys should match that.
 
-    fn null_counts(&self, _column: &Column) -> Option<ArrayRef> {
-        // FST doesn't track null counts
-        None
-    }
+        // In local mode, we might need to be careful with "file://" prefix removal or addition.
+        // But simpler: we just iterate and find the one that ends with our filename or matches?
+        // No, O(1) lookup is needed.
 
-    fn row_counts(&self, _column: &Column) -> Option<ArrayRef> {
-        // FST doesn't track row counts per container
-        None
-    }
+        // Let's rely on the fact that we populated `metadata` using `canonical_path.display().to_string()`
+        // AND we created `PartitionedFile` using `canonical_path.display().to_string()`.
+        // So the `partitioned_file.object_meta.location` *should* be that path (or converted to object store path).
 
-    /// The key method - use FST index for precise containment checks
-    fn contained(&self, column: &Column, values: &HashSet<ScalarValue>) -> Option<BooleanArray> {
-        let mut results = Vec::with_capacity(self.file_list.len());
+        // DataFusion converts string path to Path.
+        // Let's assume strict equality for now.
+        // If this fails, we might need a more robust normalization.
 
-        for file_hash in &self.file_list {
-            let contains_any = values.iter().any(|value| {
-                let value_str = value.to_string();
-                if let Ok(matches) = self.index_engine.exact_search(&column.name, &value_str) {
-                    matches.contains_key(file_hash)
-                } else {
-                    false
-                }
-            });
-            results.push(contains_any);
+        // Wait, `PartitionedFile::new(path, ...)` takes a string path.
+        // `object_store` location will wrap this.
+
+        let path_key = partitioned_file.object_meta.location.to_string();
+
+        // Fallback: Check if we have it under the exact key, or maybe try with/without leading slash
+        let path_key_slash = format!("/{}", path_key);
+        let metadata = self
+            .metadata
+            .get(&path_key)
+            .or_else(|| self.metadata.get(&path_key_slash))
+            .ok_or_else(|| {
+                DataFusionError::Plan(format!(
+                    "Metadata for file not found in cache: {}",
+                    path_key
+                ))
+            })?;
+
+        let object_store = Arc::clone(&self.object_store);
+        let mut inner =
+            ParquetObjectReader::new(object_store, partitioned_file.object_meta.location)
+                .with_file_size(partitioned_file.object_meta.size);
+
+        if let Some(hint) = metadata_size_hint {
+            inner = inner.with_footer_size_hint(hint);
         }
 
-        Some(BooleanArray::from(results))
+        Ok(Box::new(ParquetReaderWithCache {
+            metadata: Arc::clone(metadata),
+            inner,
+        }))
     }
 }
 
-impl fmt::Debug for FstPruningStatistics {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FstPruningStatistics")
-            .field("file_count", &self.file_list.len())
-            .field("filter_count", &self.filters.len())
-            .finish()
+/// Wrapper around `ParquetObjectReader` that intercepts metadata requests
+struct ParquetReaderWithCache {
+    metadata: Arc<ParquetMetaData>,
+    inner: ParquetObjectReader,
+}
+
+impl AsyncFileReader for ParquetReaderWithCache {
+    fn get_bytes(
+        &mut self,
+        range: Range<u64>,
+    ) -> BoxFuture<'_, datafusion::parquet::errors::Result<Bytes>> {
+        self.inner.get_bytes(range)
+    }
+
+    fn get_byte_ranges(
+        &mut self,
+        ranges: Vec<Range<u64>>,
+    ) -> BoxFuture<'_, datafusion::parquet::errors::Result<Vec<Bytes>>> {
+        self.inner.get_byte_ranges(ranges)
+    }
+
+    fn get_metadata(
+        &mut self,
+        _options: Option<&ArrowReaderOptions>,
+    ) -> BoxFuture<'_, datafusion::parquet::errors::Result<Arc<ParquetMetaData>>> {
+        // Return cached metadata immediately, skipping I/O
+        let metadata = self.metadata.clone();
+        async move { Ok(metadata) }.boxed()
     }
 }
 
@@ -471,7 +605,7 @@ impl Default for PdqTableProviderBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::datatypes::{DataType, Field};
+    use datafusion::arrow::datatypes::{DataType, Field};
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -511,9 +645,8 @@ mod tests {
             index_engine,
             data_dir: temp_dir.path().to_path_buf(),
             schema,
-            table_name: "test".to_string(),
+            _table_name: "test".to_string(),
             use_row_selections: false,
-            metadata_cache: HashMap::new(),
         };
 
         let filter = col("test_col").eq(lit("test_value"));

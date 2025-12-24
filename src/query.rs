@@ -1,28 +1,76 @@
 use crate::calculate_file_hash;
+use crate::key_format;
 use anyhow::Result;
 use fst::{IntoStreamer, Set, Streamer};
 use memmap2::Mmap;
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use walkdir::WalkDir;
 
-#[derive(Debug)]
+/// Represents matching results for a single file
+#[derive(Debug, Clone)]
+pub struct FileMatches {
+    /// Actual path to the Parquet file
+    pub file_path: PathBuf,
+    /// Row groups within the file that contain matching values
+    pub row_groups: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
 pub struct IndexQueryEngine {
     index_dir: PathBuf,
+    /// Maps file hash to actual file path for result resolution
+    file_map: Arc<HashMap<String, PathBuf>>,
 }
 
 impl IndexQueryEngine {
     pub fn new<P: AsRef<Path>>(index_dir: P) -> Self {
+        let index_dir = index_dir.as_ref().to_path_buf();
+        let file_map = Self::build_file_map(&index_dir);
+
         Self {
-            index_dir: index_dir.as_ref().to_path_buf(),
+            index_dir,
+            file_map: Arc::new(file_map),
         }
     }
 
+    /// Build a mapping from file hash to actual file path by reading index directory
+    fn build_file_map(index_dir: &Path) -> HashMap<String, PathBuf> {
+        let mut map = HashMap::new();
+
+        // Read the index directory structure
+        if let Ok(entries) = std::fs::read_dir(index_dir) {
+            for entry in entries.flatten() {
+                if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                    let file_hash = entry.file_name().to_string_lossy().to_string();
+
+                    // Check if there's a metadata file that stores the original path
+                    let metadata_path = entry.path().join("metadata.txt");
+                    if let Ok(contents) = std::fs::read_to_string(&metadata_path)
+                        && let Some(original_path) = contents.lines().next()
+                    {
+                        map.insert(file_hash, PathBuf::from(original_path));
+                        continue;
+                    }
+
+                    // Fallback: use hash as identifier (for backward compatibility)
+                    map.insert(
+                        file_hash.clone(),
+                        PathBuf::from(format!("file-{}", file_hash)),
+                    );
+                }
+            }
+        }
+
+        map
+    }
+
     /// Perform an exact match search across all FST indexes for a column
-    /// Returns a mapping of file hashes to row group IDs that contain the search term
-    pub fn exact_search(&self, column: &str, term: &str) -> Result<HashMap<String, Vec<usize>>> {
+    /// Returns file matches with actual paths and row group IDs that contain the search term
+    pub fn exact_search(&self, column: &str, term: &str) -> Result<Vec<FileMatches>> {
         // Collect directory entries first for parallel processing
         let entries: Vec<_> = WalkDir::new(&self.index_dir)
             .min_depth(1)
@@ -57,7 +105,24 @@ impl IndexQueryEngine {
 
         let file_row_groups: HashMap<String, Vec<usize>> = results?.into_iter().flatten().collect();
 
-        Ok(file_row_groups)
+        // Convert to FileMatches with actual paths
+        let matches = file_row_groups
+            .into_iter()
+            .map(|(file_hash, row_groups)| {
+                let file_path = self
+                    .file_map
+                    .get(&file_hash)
+                    .cloned()
+                    .unwrap_or_else(|| PathBuf::from(format!("file-{}", file_hash)));
+
+                FileMatches {
+                    file_path,
+                    row_groups,
+                }
+            })
+            .collect();
+
+        Ok(matches)
     }
 
     /// Search a specific FST index file for a term
@@ -67,12 +132,13 @@ impl IndexQueryEngine {
         let mmap = unsafe { Mmap::map(&file)? };
         let set = Set::new(mmap)?;
 
-        let mut row_groups = Vec::new();
+        // Use HashSet for O(n) deduplication instead of sort + dedup
+        let mut row_groups = HashSet::new();
 
         // Create range query bounds for exact match
         // We want all keys that start with "term\x00" but not "term\x01"
-        let start_key = format!("{term}\x00");
-        let end_key = format!("{term}\x01");
+        let start_key = format!("{term}{}", key_format::VALUE_RG_SEPARATOR);
+        let end_key = format!("{term}{}", key_format::RANGE_UPPER_BOUND_MARKER);
 
         let mut stream = set
             .range()
@@ -82,38 +148,54 @@ impl IndexQueryEngine {
 
         while let Some(key) = stream.next() {
             if let Some(row_group_id) = self.parse_row_group_from_key(key)? {
-                row_groups.push(row_group_id);
+                row_groups.insert(row_group_id);
             }
         }
 
-        // Sort and deduplicate row groups
+        // Convert to sorted Vec for consistent output
+        let mut row_groups: Vec<_> = row_groups.into_iter().collect();
         row_groups.sort_unstable();
-        row_groups.dedup();
 
         Ok(row_groups)
     }
 
-    /// Parse row group ID from FST key
+    /// Parse row group ID from FST key using zero-copy byte operations
     /// Key format: "value\x00rg<row_group_id>"
+    ///
+    /// This implementation avoids allocating the full key string by working with bytes directly.
+    /// We only convert the numeric part to UTF-8 for parsing, not the entire key.
+    /// This is especially important in hot paths with many FST results.
     fn parse_row_group_from_key(&self, key: &[u8]) -> Result<Option<usize>> {
-        let key_str = String::from_utf8(key.to_vec())?;
+        // Find the separator byte from the right (handles values with embedded null bytes)
+        // TODO: For hot paths with many keys, consider `memchr::memrchr()` for SIMD-optimized reverse search
+        // Current implementation is sufficient for typical FST key lengths (< 100 bytes)
+        let separator_byte = key_format::VALUE_RG_SEPARATOR as u8;
+        // Search from the right to find the separator before row group metadata
+        // This handles edge cases where the value itself might contain null bytes
+        let null_pos = match key.iter().rposition(|&b| b == separator_byte) {
+            Some(pos) => pos,
+            None => return Ok(None), // No separator found - not a row group key
+        };
 
-        // Find the null separator
-        if let Some(null_pos) = key_str.find('\x00') {
-            let row_group_part = &key_str[null_pos + 1..];
+        let row_group_bytes = &key[null_pos + 1..];
 
-            // Parse "rg<number>" format
-            if let Some(rg_prefix_pos) = row_group_part.find("rg") {
-                let number_str = &row_group_part[rg_prefix_pos + 2..];
-                return Ok(Some(number_str.parse::<usize>()?));
-            }
+        // Validate that the row group section starts with the expected prefix '\x00rg'
+        // This ensures we're parsing the correct format and not a malformed key
+        if row_group_bytes.starts_with(key_format::ROW_GROUP_PREFIX.as_bytes()) {
+            // Parse the row group number from bytes after "rg"
+            let num_bytes = &row_group_bytes[key_format::ROW_GROUP_PREFIX.len()..];
+
+            // Convert only the number part to UTF-8, not the entire key
+            let num_str = std::str::from_utf8(num_bytes)?;
+            return Ok(Some(num_str.parse::<usize>()?));
         }
 
+        // Not a valid row group key (separator found but not followed by "rg")
         Ok(None)
     }
 
     /// Prefix search - find all entries that start with the given prefix
-    pub fn prefix_search(&self, column: &str, prefix: &str) -> Result<HashMap<String, Vec<usize>>> {
+    pub fn prefix_search(&self, column: &str, prefix: &str) -> Result<Vec<FileMatches>> {
         // Collect directory entries first for parallel processing
         let entries: Vec<_> = WalkDir::new(&self.index_dir)
             .min_depth(1)
@@ -148,7 +230,24 @@ impl IndexQueryEngine {
 
         let file_row_groups: HashMap<String, Vec<usize>> = results?.into_iter().flatten().collect();
 
-        Ok(file_row_groups)
+        // Convert to FileMatches with actual paths
+        let matches = file_row_groups
+            .into_iter()
+            .map(|(file_hash, row_groups)| {
+                let file_path = self
+                    .file_map
+                    .get(&file_hash)
+                    .cloned()
+                    .unwrap_or_else(|| PathBuf::from(format!("file-{}", file_hash)));
+
+                FileMatches {
+                    file_path,
+                    row_groups,
+                }
+            })
+            .collect();
+
+        Ok(matches)
     }
 
     /// Prefix search within a specific FST index
@@ -157,21 +256,24 @@ impl IndexQueryEngine {
         let mmap = unsafe { Mmap::map(&file)? };
         let set = Set::new(mmap)?;
 
-        let mut row_groups = Vec::new();
+        // Use HashSet for O(n) deduplication - important for prefix searches
+        // where multiple values in the same row group may match the prefix
+        let mut row_groups = HashSet::new();
 
         // For prefix search, we want all keys that start with the prefix
         // Start with prefix followed by null separator
-        let start_key = format!("{prefix}\x00");
+        let start_key = format!("{prefix}{}", key_format::VALUE_RG_SEPARATOR);
 
         // End with prefix followed by the next possible character + null
         // We increment the last character of the prefix to get the upper bound
         let end_key = if let Some(last_char) = prefix.chars().last() {
             let mut end_prefix = prefix.to_string();
             end_prefix.pop();
-            end_prefix.push(char::from_u32(last_char as u32 + 1).unwrap_or('\u{10FFFF}'));
-            format!("{end_prefix}\x00")
+            end_prefix
+                .push(char::from_u32(last_char as u32 + 1).unwrap_or(key_format::MAX_UNICODE_CHAR));
+            format!("{end_prefix}{}", key_format::VALUE_RG_SEPARATOR)
         } else {
-            "\x01".to_string()
+            key_format::RANGE_UPPER_BOUND_MARKER.to_string()
         };
 
         let mut stream = set
@@ -181,31 +283,32 @@ impl IndexQueryEngine {
             .into_stream();
 
         while let Some(key) = stream.next() {
-            // Verify the key actually matches our prefix
-            let key_str = String::from_utf8(key.to_vec())?;
-            if let Some(null_pos) = key_str.find('\x00') {
-                let value_part = &key_str[..null_pos];
-                if value_part.starts_with(prefix) {
-                    if let Some(row_group_id) = self.parse_row_group_from_key(key)? {
-                        row_groups.push(row_group_id);
-                    }
+            // Verify the key actually matches our prefix using byte operations
+            // Find the null separator without allocating the full string
+            if let Some(null_pos) = key
+                .iter()
+                .position(|&b| b == key_format::VALUE_RG_SEPARATOR as u8)
+            {
+                let value_bytes = &key[..null_pos];
+                // Check if the value part starts with the prefix
+                if value_bytes.len() >= prefix.len()
+                    && value_bytes.starts_with(prefix.as_bytes())
+                    && let Some(row_group_id) = self.parse_row_group_from_key(key)?
+                {
+                    row_groups.insert(row_group_id);
                 }
             }
         }
 
+        // Convert to sorted Vec for consistent output
+        let mut row_groups: Vec<_> = row_groups.into_iter().collect();
         row_groups.sort_unstable();
-        row_groups.dedup();
 
         Ok(row_groups)
     }
 
     /// Range search - find all entries between start and end values (inclusive)
-    pub fn range_search(
-        &self,
-        column: &str,
-        start: &str,
-        end: &str,
-    ) -> Result<HashMap<String, Vec<usize>>> {
+    pub fn range_search(&self, column: &str, start: &str, end: &str) -> Result<Vec<FileMatches>> {
         // Collect directory entries first for parallel processing
         let entries: Vec<_> = WalkDir::new(&self.index_dir)
             .min_depth(1)
@@ -240,7 +343,24 @@ impl IndexQueryEngine {
 
         let file_row_groups: HashMap<String, Vec<usize>> = results?.into_iter().flatten().collect();
 
-        Ok(file_row_groups)
+        // Convert to FileMatches with actual paths
+        let matches = file_row_groups
+            .into_iter()
+            .map(|(file_hash, row_groups)| {
+                let file_path = self
+                    .file_map
+                    .get(&file_hash)
+                    .cloned()
+                    .unwrap_or_else(|| PathBuf::from(format!("file-{}", file_hash)));
+
+                FileMatches {
+                    file_path,
+                    row_groups,
+                }
+            })
+            .collect();
+
+        Ok(matches)
     }
 
     /// Range search within a specific FST index
@@ -249,11 +369,13 @@ impl IndexQueryEngine {
         let mmap = unsafe { Mmap::map(&file)? };
         let set = Set::new(mmap)?;
 
-        let mut row_groups = Vec::new();
+        // Use HashSet for O(n) deduplication - important for range searches
+        // where multiple values in the same row group may match the range
+        let mut row_groups = HashSet::new();
 
         // Range search from start\x00 to end\x01 (to include end)
-        let start_key = format!("{start}\x00");
-        let end_key = format!("{end}\x01");
+        let start_key = format!("{start}{}", key_format::VALUE_RG_SEPARATOR);
+        let end_key = format!("{end}{}", key_format::RANGE_UPPER_BOUND_MARKER);
 
         let mut stream = set
             .range()
@@ -263,12 +385,13 @@ impl IndexQueryEngine {
 
         while let Some(key) = stream.next() {
             if let Some(row_group_id) = self.parse_row_group_from_key(key)? {
-                row_groups.push(row_group_id);
+                row_groups.insert(row_group_id);
             }
         }
 
+        // Convert to sorted Vec for consistent output
+        let mut row_groups: Vec<_> = row_groups.into_iter().collect();
         row_groups.sort_unstable();
-        row_groups.dedup();
 
         Ok(row_groups)
     }
@@ -316,10 +439,10 @@ impl IndexQueryEngine {
             for entry in std::fs::read_dir(&file_hash_dir)? {
                 let entry = entry?;
                 let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "fst") {
-                    if let Some(column_name) = path.file_stem().and_then(|s| s.to_str()) {
-                        columns.push(column_name.to_string());
-                    }
+                if path.extension().is_some_and(|ext| ext == "fst")
+                    && let Some(column_name) = path.file_stem().and_then(|s| s.to_str())
+                {
+                    columns.push(column_name.to_string());
                 }
             }
         }
@@ -369,9 +492,9 @@ mod tests {
         let mut writer = std::io::BufWriter::new(index_file);
 
         let mut builder = SetBuilder::new(&mut writer)?;
-        builder.insert("1.2.3.4\x00rg0")?;
-        builder.insert("1.2.3.4\x00rg1")?;
-        builder.insert("5.6.7.8\x00rg0")?;
+        builder.insert(format!("1.2.3.4{}rg0", key_format::VALUE_RG_SEPARATOR))?;
+        builder.insert(format!("1.2.3.4{}rg1", key_format::VALUE_RG_SEPARATOR))?;
+        builder.insert(format!("5.6.7.8{}rg0", key_format::VALUE_RG_SEPARATOR))?;
         builder.finish()?;
         drop(writer);
 
@@ -379,9 +502,15 @@ mod tests {
         let results = engine.exact_search("src_ip", "1.2.3.4")?;
 
         assert_eq!(results.len(), 1);
-        assert!(results.contains_key(file_hash));
+        // results is a Vec<FileMatches>, verify we got the expected match
+        let match_result = &results[0];
+        // expected path is constructed in build_file_map default case
+        assert_eq!(
+            match_result.file_path,
+            PathBuf::from(format!("file-{}", file_hash))
+        );
 
-        let row_groups = results.get(file_hash).unwrap();
+        let row_groups = &match_result.row_groups;
         assert_eq!(row_groups.len(), 2);
         assert!(row_groups.contains(&0));
         assert!(row_groups.contains(&1));
@@ -393,11 +522,23 @@ mod tests {
     fn test_parse_row_group_from_key() -> Result<()> {
         let engine = IndexQueryEngine::new("/tmp");
 
+        // Standard case: simple value with separator and row group
         let key = "1.2.3.4\x00rg5".as_bytes();
         let result = engine.parse_row_group_from_key(key)?;
         assert_eq!(result, Some(5));
 
+        // Invalid case: no separator
         let key = "invalid_key".as_bytes();
+        let result = engine.parse_row_group_from_key(key)?;
+        assert_eq!(result, None);
+
+        // Edge case: value contains null bytes - should find the rightmost separator
+        let key = b"value\x00with\x00nulls\x00rg42";
+        let result = engine.parse_row_group_from_key(key)?;
+        assert_eq!(result, Some(42));
+
+        // Invalid case: separator but no "rg" prefix
+        let key = "value\x00notrowgroup".as_bytes();
         let result = engine.parse_row_group_from_key(key)?;
         assert_eq!(result, None);
 
@@ -419,10 +560,10 @@ mod tests {
         let mut writer = std::io::BufWriter::new(index_file);
 
         let mut builder = SetBuilder::new(&mut writer)?;
-        builder.insert("10.0.0.1\x00rg2")?;
-        builder.insert("192.168.1.1\x00rg0")?;
-        builder.insert("192.168.1.2\x00rg1")?;
-        builder.insert("192.168.2.1\x00rg0")?;
+        builder.insert(format!("10.0.0.1{}rg2", key_format::VALUE_RG_SEPARATOR))?;
+        builder.insert(format!("192.168.1.1{}rg0", key_format::VALUE_RG_SEPARATOR))?;
+        builder.insert(format!("192.168.1.2{}rg1", key_format::VALUE_RG_SEPARATOR))?;
+        builder.insert(format!("192.168.2.1{}rg0", key_format::VALUE_RG_SEPARATOR))?;
         builder.finish()?;
         drop(writer);
 
@@ -430,7 +571,14 @@ mod tests {
         let results = engine.prefix_search("src_ip", "192.168.1")?;
 
         assert_eq!(results.len(), 1);
-        let row_groups = results.get(file_hash).unwrap();
+        // results is a Vec<FileMatches>
+        let match_result = &results[0];
+        assert_eq!(
+            match_result.file_path,
+            PathBuf::from(format!("file-{}", file_hash))
+        );
+
+        let row_groups = &match_result.row_groups;
         assert_eq!(row_groups.len(), 2);
         assert!(row_groups.contains(&0));
         assert!(row_groups.contains(&1));

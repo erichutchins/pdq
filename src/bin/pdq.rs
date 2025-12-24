@@ -1,10 +1,11 @@
 use anyhow::Result;
-use arrow::csv::WriterBuilder;
-use arrow::json::LineDelimitedWriter;
-use arrow::record_batch::RecordBatch;
 use clap::{Arg, Command};
+use datafusion::arrow::csv::WriterBuilder;
+use datafusion::arrow::json::LineDelimitedWriter;
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::{arrow::util::pretty, prelude::*};
-use pdq::{index::Indexer, search::Searcher, PdqTableProviderBuilder};
+use pdq::index::Indexer;
+use pdq::{IndexQueryEngine, PdqTableProviderBuilder};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -39,6 +40,12 @@ async fn main() -> Result<()> {
                         .value_name("DIR")
                         .help("Output directory for index files")
                         .default_value("pdq-index"),
+                )
+                .arg(
+                    Arg::new("prune")
+                        .long("prune")
+                        .help("Delete orphan indices whose source Parquet files are missing")
+                        .action(clap::ArgAction::SetTrue),
                 ),
         )
         .subcommand(
@@ -126,10 +133,17 @@ async fn main() -> Result<()> {
             let path = sub_matches.get_one::<String>("path").unwrap();
             let column = sub_matches.get_one::<String>("column").unwrap();
             let output = sub_matches.get_one::<String>("output").unwrap();
-
-            println!("Building index for column '{column}' from '{path}'...");
+            let prune = sub_matches.get_flag("prune");
 
             let indexer = Indexer::new(output);
+
+            if prune {
+                println!("Pruning orphan indices in '{output}'...");
+                let pruned = indexer.prune_orphans()?;
+                println!("Successfully pruned {pruned} orphan indices.");
+            }
+
+            println!("Building index for column '{column}' from '{path}'...");
             indexer.build_index(Path::new(path), column)?;
 
             println!("Index built successfully in '{output}'");
@@ -140,14 +154,14 @@ async fn main() -> Result<()> {
             let index_dir = sub_matches.get_one::<String>("index-dir").unwrap();
             let search_type = sub_matches.get_one::<String>("type").unwrap();
 
-            let searcher = Searcher::new(index_dir);
+            let engine = IndexQueryEngine::new(index_dir);
 
-            let results = match search_type.as_str() {
-                "exact" => searcher.exact_search(column, term)?,
-                "prefix" => searcher.search(column, term)?,
+            let file_row_groups = match search_type.as_str() {
+                "exact" => engine.exact_search(column, term)?,
+                "prefix" => engine.prefix_search(column, term)?,
                 "range" => {
                     let end_term = format!("{term}~");
-                    searcher.range_search(column, term, &end_term)?
+                    engine.range_search(column, term, &end_term)?
                 }
                 _ => {
                     eprintln!("Unknown search type: {search_type}");
@@ -155,15 +169,19 @@ async fn main() -> Result<()> {
                 }
             };
 
-            if results.is_empty() {
+            if file_row_groups.is_empty() {
                 println!("No results found for term: {term}");
             } else {
-                println!("Found {} matching row groups:", results.len());
-                for result in results {
-                    println!(
-                        "  File: {}, Row Group: {}",
-                        result.file_path, result.row_group
-                    );
+                let total_row_groups: usize =
+                    file_row_groups.iter().map(|v| v.row_groups.len()).sum();
+                println!(
+                    "Found {} matching row groups across {} files:",
+                    total_row_groups,
+                    file_row_groups.len()
+                );
+                for match_result in file_row_groups {
+                    println!("  File: {}", match_result.file_path.display());
+                    println!("    Row groups: {:?}", match_result.row_groups);
                 }
             }
         }
@@ -183,10 +201,10 @@ async fn main() -> Result<()> {
             let start_time = Instant::now();
 
             // First, check the index directly to show optimization in action
-            let searcher = Searcher::new(index_dir);
-            let index_results = searcher.exact_search(column, term)?;
+            let engine = IndexQueryEngine::new(index_dir);
+            let file_row_groups = engine.exact_search(column, term)?;
 
-            if index_results.is_empty() {
+            if file_row_groups.is_empty() {
                 let query_time = start_time.elapsed();
                 println!("⚡ ZERO-MATCH OPTIMIZATION TRIGGERED!");
                 println!("   Index lookup: {query_time:?}");
@@ -196,19 +214,20 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
 
+            let total_row_groups: usize = file_row_groups.iter().map(|v| v.row_groups.len()).sum();
             println!("📊 Index Results:");
             println!(
                 "   Found {} matching row groups across {} files",
-                index_results.iter().map(|_r| 1).sum::<usize>(),
-                index_results
-                    .iter()
-                    .map(|r| &r.file_path)
-                    .collect::<std::collections::HashSet<_>>()
-                    .len()
+                total_row_groups,
+                file_row_groups.len()
             );
 
-            for result in &index_results {
-                println!("   📁 {}: row group {}", result.file_path, result.row_group);
+            for match_result in &file_row_groups {
+                println!(
+                    "   📁 File {}: row groups {:?}",
+                    match_result.file_path.display(),
+                    match_result.row_groups
+                );
             }
 
             // Create the PdqTableProvider using the builder

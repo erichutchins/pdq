@@ -6,7 +6,7 @@ use datafusion::execution::context::SessionContext;
 
 use datafusion::parquet::basic::{Compression, Encoding};
 use datafusion::parquet::file::properties::WriterProperties;
-use pdq::{index::Indexer, search::Searcher, PdqTableProviderBuilder};
+use pdq::{PdqTableProviderBuilder, index::Indexer, query::IndexQueryEngine};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,8 +31,8 @@ async fn test_complete_pdq_pipeline() -> Result<()> {
     let indexer = Indexer::new(index_dir.to_str().unwrap());
     indexer.build_index(&data_dir, "value")?;
 
-    // Verify the index was created successfully using the Searcher
-    let searcher = Searcher::new(index_dir.to_str().unwrap());
+    // Verify the index was created successfully using the IndexQueryEngine
+    let searcher = IndexQueryEngine::new(index_dir.to_str().unwrap());
     let apple_results = searcher.exact_search("value", "apple")?;
     assert!(
         !apple_results.is_empty(),
@@ -63,7 +63,7 @@ async fn test_complete_pdq_pipeline() -> Result<()> {
     let apple_batches = apple_df.collect().await?;
 
     // Verify we got only apple values
-    verify_query_results(&apple_batches, "value", |v: &str| v == "apple")?;
+    verify_string_column(&apple_batches, "value", |v| v == "apple")?;
 
     // Test 2: Query for nonexistent values (should be empty)
     let empty_df = ctx
@@ -78,7 +78,7 @@ async fn test_complete_pdq_pipeline() -> Result<()> {
     // Test 3: Query with ID predicate
     let id_df = ctx.sql("SELECT * FROM test_table WHERE id < 3").await?;
     let id_batches = id_df.collect().await?;
-    verify_query_results(&id_batches, "id", |id: i32| id < 3)?;
+    verify_i32_column(&id_batches, "id", |id| id < 3)?;
 
     // Test 4: Multiple predicates
     let complex_df = ctx
@@ -87,8 +87,8 @@ async fn test_complete_pdq_pipeline() -> Result<()> {
     let complex_batches = complex_df.collect().await?;
 
     // Verify we got only results that match both predicates
-    verify_query_results(&complex_batches, "value", |v: &str| v == "apple")?;
-    verify_query_results(&complex_batches, "id", |id: i32| id < 3)?;
+    verify_string_column(&complex_batches, "value", |v| v == "apple")?;
+    verify_i32_column(&complex_batches, "id", |id| id < 3)?;
 
     Ok(())
 }
@@ -123,8 +123,11 @@ async fn create_test_parquet_files(dir: &Path, values: &[&str]) -> Result<Vec<Pa
         .set_max_row_group_size(2)
         .build();
 
-    let mut writer =
-        parquet::arrow::ArrowWriter::try_new(File::create(&file_path)?, schema, Some(props))?;
+    let mut writer = datafusion::parquet::arrow::ArrowWriter::try_new(
+        File::create(&file_path)?,
+        schema,
+        Some(props),
+    )?;
 
     writer.write(&batch)?;
     writer.close()?;
@@ -132,57 +135,56 @@ async fn create_test_parquet_files(dir: &Path, values: &[&str]) -> Result<Vec<Pa
     Ok(vec![file_path])
 }
 
-/// Helper function to verify query results match a predicate.
-fn verify_query_results<T, F>(
+/// Helper function to verify string column values match a predicate.
+fn verify_string_column(
     batches: &[RecordBatch],
     column_name: &str,
-    predicate: F,
-) -> Result<()>
-where
-    T: std::fmt::Debug + Clone,
-    F: Fn(T) -> bool,
-{
-    if batches.is_empty() {
-        return Ok(());
-    }
-
+    predicate: impl Fn(&str) -> bool,
+) -> Result<()> {
     for batch in batches {
         let column = batch
             .column_by_name(column_name)
             .ok_or_else(|| anyhow::anyhow!("Column not found: {column_name}"))?;
 
-        for row_idx in 0..batch.num_rows() {
-            let scalar_value = match column.data_type() {
-                DataType::Int32 => {
-                    let array = column
-                        .as_any()
-                        .downcast_ref::<Int32Array>()
-                        .ok_or_else(|| anyhow::anyhow!("Failed to downcast to Int32Array"))?;
-                    let value: T = unsafe { std::mem::transmute_copy(&array.value(row_idx)) };
-                    value
-                }
-                DataType::Utf8 => {
-                    let array = column
-                        .as_any()
-                        .downcast_ref::<StringArray>()
-                        .ok_or_else(|| anyhow::anyhow!("Failed to downcast to StringArray"))?;
-                    let value = array.value(row_idx);
-                    // This is a bit of a hack but works for our test cases
-                    let value: T = unsafe { std::mem::transmute_copy::<&str, T>(&value) };
-                    value
-                }
-                _ => anyhow::bail!(
-                    "Unsupported column type for testing: {:?}",
-                    column.data_type()
-                ),
-            };
+        let array = column
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| anyhow::anyhow!("Column {column_name} is not a StringArray"))?;
 
+        for row_idx in 0..batch.num_rows() {
+            let value = array.value(row_idx);
             assert!(
-                predicate(scalar_value.clone()),
-                "Value in column {column_name} doesn't match predicate: {scalar_value:?}",
+                predicate(value),
+                "Value in column {column_name} doesn't match predicate: {value:?}",
             );
         }
     }
+    Ok(())
+}
 
+/// Helper function to verify i32 column values match a predicate.
+fn verify_i32_column(
+    batches: &[RecordBatch],
+    column_name: &str,
+    predicate: impl Fn(i32) -> bool,
+) -> Result<()> {
+    for batch in batches {
+        let column = batch
+            .column_by_name(column_name)
+            .ok_or_else(|| anyhow::anyhow!("Column not found: {column_name}"))?;
+
+        let array = column
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or_else(|| anyhow::anyhow!("Column {column_name} is not an Int32Array"))?;
+
+        for row_idx in 0..batch.num_rows() {
+            let value = array.value(row_idx);
+            assert!(
+                predicate(value),
+                "Value in column {column_name} doesn't match predicate: {value:?}",
+            );
+        }
+    }
     Ok(())
 }

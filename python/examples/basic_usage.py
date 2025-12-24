@@ -9,6 +9,7 @@ This example demonstrates how to use PDQ to:
 4. Work with the results using both PyArrow and Polars
 """
 
+import asyncio
 import os
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -58,7 +59,7 @@ def create_sample_data(data_dir):
     print(f"Created 3 sample Parquet files in {data_dir}")
 
 
-def main():
+async def main():
     # Setup directories
     base_dir = Path("./pdq_example")
     data_dir = base_dir / "data"
@@ -74,19 +75,22 @@ def main():
     )
     print("Index built successfully!")
 
-    # 2. Search for files containing a specific customer
+    # 2. Search for files containing a specific customer (ASYNC)
     print("\n2. Searching for files with customer C000050...")
-    results = pdq.search_files(
+    results = await pdq.search_files(
         column="customer_id", term="C000050", index_dir=str(index_dir)
     )
 
-    print(f"Found {len(results)} matches:")
-    for match in results:
-        print(f"  File: {match.file_path}, Row Group: {match.row_group}")
+    if results is not None and len(results) > 0:
+        print(f"Found {len(results)} match(es):")
+        # Results are an Arrow table with file_path and row_group columns
+        print(results.to_pandas())
+    else:
+        print("No results found")
 
-    # 3. Query data for a specific customer
+    # 3. Query data for a specific customer (ASYNC)
     print("\n3. Querying data for customer C000050...")
-    table = pdq.query(
+    table = await pdq.query(
         column="customer_id",
         term="C000050",
         data_dir=str(data_dir),
@@ -102,23 +106,22 @@ def main():
     else:
         print("No results found")
 
-    # 4. Query and convert to Polars LazyFrame
+    # 4. Query and convert to Polars DataFrame (ASYNC)
     print("\n4. Querying with Polars integration...")
-    lazy_frame = pdq.query(
+    polars_df = await pdq.query(
         column="customer_id",
         term="C000100",
         data_dir=str(data_dir),
         index_dir=str(index_dir),
-        to_polars=True,
+        format="polars",
     )
 
-    if lazy_frame:
+    if polars_df is not None:
         # Apply some Polars operations
         result = (
-            lazy_frame.filter(pl.col("amount") > 100)
+            polars_df.filter(pl.col("amount") > 100)
             .select(["customer_id", "amount", "category"])
             .sort("amount", descending=True)
-            .collect()
         )
 
         print("\nResults filtered with Polars:")
@@ -127,27 +130,37 @@ def main():
     else:
         print("No results found")
 
-    # 5. Using the classes directly for more control
+    # 5. Using the classes directly for more control (ASYNC)
     print("\n5. Using the PDQ classes directly...")
 
     # Create searcher
     searcher = pdq.Searcher(str(index_dir))
-    # Search for customers with IDs starting with "C0002"
-    prefix_results = searcher.prefix_search("customer_id", "C0002")
 
-    print(f"Found {len(prefix_results)} matches for prefix 'C0002'")
+    # Search for customers with IDs starting with "C0002" (ASYNC)
+    prefix_results = await searcher.prefix_search("customer_id", "C0002")
 
-    # Create query engine
+    if prefix_results is not None and len(prefix_results) > 0:
+        # Convert to Pandas to show results
+        prefix_df = pa.Table.from_batches(prefix_results).to_pandas()
+        print(f"Found {len(prefix_df)} match(es) for prefix 'C0002':")
+        # Group by file to show summary
+        summary = prefix_df.groupby("file_path").size()
+        print(summary.head())
+    else:
+        print("No results found")
+
+    # 6. Create query engine and execute SQL (ASYNC)
+    print("\n6. Executing SQL query...")
     engine = pdq.QueryEngine(str(index_dir), str(data_dir))
 
     # Execute a SQL query
-    print("\nExecuting SQL query...")
-    sql_result = engine.sql_query(
+    sql_result = await engine.sql_query(
         "SELECT customer_id, AVG(amount) as avg_amount, COUNT(*) as transaction_count "
         "FROM pdq_data "
-        "WHERE customer_id LIKE 'C0001%' "
+        "WHERE customer_id >= 'C00010' AND customer_id < 'C00020' "
         "GROUP BY customer_id "
-        "HAVING COUNT(*) = 1"
+        "ORDER BY avg_amount DESC "
+        "LIMIT 5"
     )
 
     if sql_result:
@@ -156,6 +169,42 @@ def main():
     else:
         print("No SQL results found")
 
+    # 7. Demonstrate parallel searches with asyncio.gather
+    print("\n7. Parallel searches with asyncio.gather...")
+
+    # Search for multiple customers in parallel
+    search_tasks = [
+        searcher.exact_search("customer_id", f"C{i:06d}")
+        for i in [100, 200, 300, 400, 500]
+    ]
+
+    parallel_results = await asyncio.gather(*search_tasks)
+
+    # Count results (each is a list of record batches)
+    found_count = sum(1 for r in parallel_results if r is not None and len(r) > 0)
+    print(f"Searched 5 customers in parallel, found {found_count} with matches")
+
+    # 8. Using sql_query convenience function with Polars output
+    print("\n8. Using convenience function for SQL with Polars...")
+
+    polars_result = await pdq.sql_query(
+        sql="SELECT category, COUNT(*) as count, AVG(amount) as avg_amount "
+        "FROM pdq_data "
+        "GROUP BY category "
+        "ORDER BY count DESC",
+        data_dir=str(data_dir),
+        index_dir=str(index_dir),
+        format="polars",
+    )
+
+    if polars_result is not None:
+        print("\nCategory Statistics:")
+        print(polars_result)
+    else:
+        print("No results found")
+
+    print("\n✅ All examples completed successfully!")
+
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

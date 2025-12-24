@@ -1,10 +1,13 @@
+use datafusion::arrow::array::{Int32Array, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::TableProvider;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::TableProviderFilterPushDown;
-use datafusion::logical_expr::{col, lit, Expr};
+use datafusion::logical_expr::{Expr, col, lit};
 use datafusion::parquet::basic::{Compression, Encoding};
 use datafusion::parquet::file::properties::WriterProperties;
+use pdq::index::Indexer;
 use pdq::provider::PdqTableProviderBuilder;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -35,7 +38,7 @@ async fn create_test_parquet_files(
         let file_path = dir.join(format!("test_file_{file_idx}.parquet"));
         file_paths.push(file_path.clone());
 
-        let mut writer = parquet::arrow::ArrowWriter::try_new(
+        let mut writer = datafusion::parquet::arrow::ArrowWriter::try_new(
             File::create(&file_path)?,
             schema.clone(),
             Some(
@@ -52,13 +55,13 @@ async fn create_test_parquet_files(
             let start_id = file_idx * rows_per_file + batch_idx * rows_per_group;
 
             // Create a batch with ids and values
-            let batch = arrow::record_batch::RecordBatch::try_new(
+            let batch = RecordBatch::try_new(
                 schema.clone(),
                 vec![
-                    Arc::new(arrow::array::Int32Array::from_iter_values(
+                    Arc::new(Int32Array::from_iter_values(
                         (start_id..(start_id + rows_per_group)).map(|id| id as i32),
                     )),
-                    Arc::new(arrow::array::StringArray::from_iter_values(
+                    Arc::new(StringArray::from_iter_values(
                         (0..rows_per_group).map(|i| values[i % values.len()]),
                     )),
                 ],
@@ -73,26 +76,19 @@ async fn create_test_parquet_files(
     Ok(file_paths)
 }
 
-/// Helper to create a simple FST index for test files
+/// Helper to create a real FST index for test files using the Indexer.
 ///
-/// NOTE: This is currently a stub implementation that doesn't actually create
-/// functional FST indices. This is why tests don't verify actual result contents
-/// but just that queries execute without errors.
-///
-/// Note: This is a stub implementation for testing. In a real scenario,
-/// you would use the Indexer to create actual FST files. This is why
-/// some tests might return empty results.
-async fn create_test_index(
+/// This replaces the previous stub implementation and creates functional FST
+/// indices that enable proper row-group pruning tests.
+fn create_test_index(
     index_dir: &Path,
     data_dir: &Path,
-    values: &[&str],
+    column: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // For this test, we'll directly create a simple index structure
-    // In a real scenario, you'd use the Indexer
     fs::create_dir_all(index_dir)?;
 
-    // We'd normally create FST files here
-    // But for the test, we'll just simulate it
+    let indexer = Indexer::new(index_dir.to_str().unwrap());
+    indexer.build_index(data_dir, column)?;
 
     Ok(())
 }
@@ -172,7 +168,7 @@ async fn test_basic_query() -> Result<(), Box<dyn std::error::Error>> {
     create_test_parquet_files(&data_dir, 2, 1000, 200, values).await?;
 
     // Create test index
-    create_test_index(&index_dir, &data_dir, values).await?;
+    create_test_index(&index_dir, &data_dir, "value")?;
 
     // Create provider
     let provider = PdqTableProviderBuilder::new()
@@ -213,7 +209,7 @@ async fn test_filter_pushdown() -> Result<(), Box<dyn std::error::Error>> {
     create_test_parquet_files(&data_dir, 2, 1000, 200, values).await?;
 
     // Create test index
-    create_test_index(&index_dir, &data_dir, values).await?;
+    create_test_index(&index_dir, &data_dir, "value")?;
 
     // Create provider
     let provider = PdqTableProviderBuilder::new()
@@ -253,7 +249,7 @@ async fn test_filtered_query() -> Result<(), Box<dyn std::error::Error>> {
     create_test_parquet_files(&data_dir, 2, 1000, 200, values).await?;
 
     // Create test index
-    create_test_index(&index_dir, &data_dir, values).await?;
+    create_test_index(&index_dir, &data_dir, "value")?;
 
     // Create provider
     let provider = PdqTableProviderBuilder::new()
@@ -283,7 +279,7 @@ async fn test_filtered_query() -> Result<(), Box<dyn std::error::Error>> {
             for i in 0..batch.num_rows() {
                 let value = value_array
                     .as_any()
-                    .downcast_ref::<arrow::array::StringArray>()
+                    .downcast_ref::<StringArray>()
                     .expect("should be string array")
                     .value(i);
 
@@ -310,7 +306,7 @@ async fn test_empty_result_optimization() -> Result<(), Box<dyn std::error::Erro
     create_test_parquet_files(&data_dir, 2, 1000, 200, values).await?;
 
     // Create test index
-    create_test_index(&index_dir, &data_dir, values).await?;
+    create_test_index(&index_dir, &data_dir, "value")?;
 
     // Create provider
     let provider = PdqTableProviderBuilder::new()
@@ -327,7 +323,7 @@ async fn test_empty_result_optimization() -> Result<(), Box<dyn std::error::Erro
     let df = ctx
         .sql("SELECT * FROM test_table WHERE value = 'nonexistent_value'")
         .await?;
-    let results = df.collect().await?;
+    let _results = df.collect().await?;
 
     // With our stub index implementation, we'll likely get empty results
     // but we don't need to assert it since the query itself is what we're testing
@@ -350,7 +346,7 @@ async fn test_multiple_filters() -> Result<(), Box<dyn std::error::Error>> {
     create_test_parquet_files(&data_dir, 2, 1000, 200, values).await?;
 
     // Create test index
-    create_test_index(&index_dir, &data_dir, values).await?;
+    create_test_index(&index_dir, &data_dir, "value")?;
 
     // Create provider
     let provider = PdqTableProviderBuilder::new()
@@ -381,13 +377,13 @@ async fn test_multiple_filters() -> Result<(), Box<dyn std::error::Error>> {
             for i in 0..batch.num_rows() {
                 let value = value_array
                     .as_any()
-                    .downcast_ref::<arrow::array::StringArray>()
+                    .downcast_ref::<StringArray>()
                     .expect("should be string array")
                     .value(i);
 
                 let id = id_array
                     .as_any()
-                    .downcast_ref::<arrow::array::Int32Array>()
+                    .downcast_ref::<Int32Array>()
                     .expect("should be int32 array")
                     .value(i);
 
