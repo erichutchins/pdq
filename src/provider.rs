@@ -38,6 +38,10 @@ use datafusion::datasource::physical_plan::parquet::ParquetAccessPlan;
 use crate::calculate_file_hash;
 use crate::query::IndexQueryEngine;
 
+type PrunedRowGroups = HashMap<String, Vec<usize>>;
+type HashToPath = HashMap<String, PathBuf>;
+type MetadataMap = HashMap<String, Arc<ParquetMetaData>>;
+
 /// Enhanced PDQ TableProvider with DataFusion v49 improvements
 ///
 /// This implementation provides:
@@ -132,7 +136,7 @@ impl PdqTableProvider {
     fn prune_with_fst_index(
         &self,
         filters: &[Expr],
-    ) -> anyhow::Result<(HashMap<String, Vec<usize>>, HashMap<String, PathBuf>)> {
+    ) -> anyhow::Result<(PrunedRowGroups, HashToPath)> {
         let mut file_row_groups: HashMap<String, HashSet<usize>> = HashMap::new();
         let mut hash_to_path: HashMap<String, PathBuf> = HashMap::new();
 
@@ -201,15 +205,11 @@ impl PdqTableProvider {
     }
 
     /// Resolve file hashes to actual file paths and load metadata for them
-    #[allow(clippy::type_complexity)]
     fn load_pruned_metadata(
         &self,
-        file_row_groups: &HashMap<String, Vec<usize>>,
-        hash_to_path: &HashMap<String, PathBuf>,
-    ) -> anyhow::Result<(
-        HashMap<String, PathBuf>,
-        HashMap<String, Arc<ParquetMetaData>>,
-    )> {
+        file_row_groups: &PrunedRowGroups,
+        hash_to_path: &HashToPath,
+    ) -> anyhow::Result<(HashToPath, MetadataMap)> {
         let mut resolved_paths: HashMap<String, PathBuf> = HashMap::new();
         let mut metadata_map: HashMap<String, Arc<ParquetMetaData>> = HashMap::new();
 
@@ -643,7 +643,6 @@ mod tests {
 
         let provider = PdqTableProvider {
             index_engine,
-            data_dir: temp_dir.path().to_path_buf(),
             schema,
             _table_name: "test".to_string(),
             use_row_selections: false,
