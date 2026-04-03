@@ -15,9 +15,9 @@ use datafusion::datasource::TableProvider;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::datasource::physical_plan::{
-    FileScanConfigBuilder, ParquetFileReaderFactory, ParquetSource,
+    FileScanConfigBuilder, FileSource, ParquetFileReaderFactory, ParquetSource,
 };
-use datafusion::datasource::physical_plan::{FileOpenFuture, FileOpener};
+use datafusion::datasource::physical_plan::{FileOpenFuture, FileOpener, FileScanConfig};
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
@@ -688,6 +688,82 @@ impl FileOpener for PdqParquetOpener {
                 Box::pin(stream.map(|r| r.map_err(DataFusionError::from)));
             Ok(mapped)
         }))
+    }
+}
+
+/// FileSource that wraps ParquetSource but uses PdqParquetOpener for file opens.
+///
+/// Delegates all FileSource methods to the inner ParquetSource, except
+/// create_file_opener() which returns a PdqParquetOpener. This moves
+/// Parquet footer I/O from scan() (planning) to open() (execution).
+pub struct PdqFileSource {
+    inner: Arc<dyn FileSource>,
+    object_store: Arc<dyn ObjectStore>,
+}
+
+impl Clone for PdqFileSource {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            object_store: Arc::clone(&self.object_store),
+        }
+    }
+}
+
+impl std::fmt::Debug for PdqFileSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PdqFileSource")
+            .field("file_type", &self.inner.file_type())
+            .finish()
+    }
+}
+
+impl PdqFileSource {
+    pub fn new(inner: ParquetSource, object_store: Arc<dyn ObjectStore>) -> Self {
+        Self {
+            inner: Arc::new(inner),
+            object_store,
+        }
+    }
+}
+
+impl FileSource for PdqFileSource {
+    fn create_file_opener(
+        &self,
+        _object_store: Arc<dyn ObjectStore>,
+        base_config: &FileScanConfig,
+        _partition: usize,
+    ) -> datafusion::common::Result<Arc<dyn FileOpener>> {
+        let batch_size = base_config.batch_size.unwrap_or(8192);
+        Ok(Arc::new(PdqParquetOpener::new(
+            Arc::clone(&self.object_store),
+            None, // projection — let DataFusion handle at a higher level
+            batch_size,
+        )))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn table_schema(&self) -> &datafusion::datasource::table_schema::TableSchema {
+        self.inner.table_schema()
+    }
+
+    fn with_batch_size(&self, batch_size: usize) -> Arc<dyn FileSource> {
+        let new_inner = self.inner.with_batch_size(batch_size);
+        Arc::new(PdqFileSource {
+            inner: new_inner,
+            object_store: Arc::clone(&self.object_store),
+        })
+    }
+
+    fn metrics(&self) -> &datafusion::physical_plan::metrics::ExecutionPlanMetricsSet {
+        self.inner.metrics()
+    }
+
+    fn file_type(&self) -> &str {
+        self.inner.file_type()
     }
 }
 
