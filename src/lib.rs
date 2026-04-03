@@ -35,7 +35,7 @@ pub mod key_format {
     pub const MAX_UNICODE_CHAR: char = '\u{10FFFF}';
 }
 
-pub use provider::{PdqTableProvider, PdqTableProviderBuilder};
+pub use provider::{PdqTableProvider, PdqTableProviderBuilder, PdqParquetOpener};
 pub use query::IndexQueryEngine;
 
 pub fn calculate_file_hash(file_path: &str) -> anyhow::Result<String> {

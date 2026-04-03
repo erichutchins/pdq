@@ -8,6 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::Session;
 use datafusion::common::{DFSchema, DataFusionError, Result as DataFusionResult};
 use datafusion::datasource::TableProvider;
@@ -16,19 +17,23 @@ use datafusion::datasource::source::DataSourceExec;
 use datafusion::datasource::physical_plan::{
     FileScanConfigBuilder, ParquetFileReaderFactory, ParquetSource,
 };
+use datafusion::datasource::physical_plan::{FileOpenFuture, FileOpener};
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::parquet::arrow::arrow_reader::{
     ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
 };
-use datafusion::parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader};
+use datafusion::parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader, ParquetRecordBatchStreamBuilder};
+use datafusion::parquet::arrow::ProjectionMask;
 use datafusion::parquet::file::metadata::ParquetMetaData;
 use datafusion::parquet::file::reader::{FileReader, SerializedFileReader};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use futures::FutureExt;
+use futures::StreamExt;
 use futures::future::BoxFuture;
+use futures::stream::BoxStream;
 use object_store::ObjectStore;
 use rayon::prelude::*;
 
@@ -599,6 +604,92 @@ impl PdqTableProviderBuilder {
 impl Default for PdqTableProviderBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Custom FileOpener that reads Parquet footer at execution time.
+///
+/// Receives `Vec<usize>` (matched row group indices) from `PartitionedFile::extensions`
+/// set by `scan()`. Opens the file, reads the footer, builds a row group selection,
+/// and returns the record batch stream.
+pub struct PdqParquetOpener {
+    object_store: Arc<dyn ObjectStore>,
+    schema: SchemaRef,
+    projection: Option<Vec<usize>>,
+    batch_size: usize,
+}
+
+impl PdqParquetOpener {
+    pub fn new(
+        object_store: Arc<dyn ObjectStore>,
+        schema: SchemaRef,
+        projection: Option<Vec<usize>>,
+        batch_size: usize,
+    ) -> Self {
+        Self { object_store, schema, projection, batch_size }
+    }
+}
+
+impl FileOpener for PdqParquetOpener {
+    fn open(
+        &self,
+        partitioned_file: PartitionedFile,
+    ) -> datafusion::common::Result<FileOpenFuture> {
+        let object_store = Arc::clone(&self.object_store);
+        let projection = self.projection.clone();
+        let batch_size = self.batch_size;
+
+        // Extract Vec<usize> from extensions — matched row group indices from scan()
+        let row_groups: Vec<usize> = partitioned_file
+            .extensions
+            .as_ref()
+            .and_then(|ext| ext.downcast_ref::<Vec<usize>>())
+            .cloned()
+            .unwrap_or_default();
+
+        let location = partitioned_file.object_meta.location.clone();
+        let file_size = partitioned_file.object_meta.size;
+
+        Ok(Box::pin(async move {
+            // Footer read happens HERE, at execution time (not planning time)
+            let reader = ParquetObjectReader::new(object_store, location)
+                .with_file_size(file_size);
+            let builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
+
+            let total_rgs = builder.metadata().num_row_groups();
+
+            // Build access plan: start with none, enable only matched row groups
+            let mut access_plan = ParquetAccessPlan::new_none(total_rgs);
+            for &idx in &row_groups {
+                if idx < total_rgs {
+                    access_plan.scan(idx);
+                }
+            }
+
+            let valid_rg_indexes = access_plan.row_group_indexes();
+
+            if valid_rg_indexes.is_empty() {
+                // All indices were stale — return empty stream
+                let empty: BoxStream<'static, datafusion::common::Result<RecordBatch>> =
+                    Box::pin(futures::stream::empty());
+                return Ok(empty);
+            }
+
+            let mut builder = builder
+                .with_row_groups(valid_rg_indexes)
+                .with_batch_size(batch_size);
+
+            if let Some(proj) = projection {
+                let parquet_schema = builder.parquet_schema().clone();
+                let mask = ProjectionMask::roots(&parquet_schema, proj);
+                builder = builder.with_projection(mask);
+            }
+
+            let stream = builder.build()?;
+            let mapped: BoxStream<'static, datafusion::common::Result<RecordBatch>> =
+                Box::pin(stream.map(|r| r.map_err(|e| DataFusionError::from(e))));
+            Ok(mapped)
+        }))
     }
 }
 
