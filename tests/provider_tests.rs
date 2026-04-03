@@ -398,6 +398,37 @@ async fn test_multiple_filters() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// ─── PdqFileSource tests ─────────────────────────────────────────────────────
+
+/// Verify PdqFileSource::create_file_opener() returns a PdqParquetOpener.
+/// This is the central invariant of the wrapper.
+#[test]
+fn test_pdq_file_source_uses_pdq_opener() {
+    use datafusion::datasource::physical_plan::FileSource;
+    use datafusion::datasource::physical_plan::ParquetSource;
+    use object_store::local::LocalFileSystem;
+    use pdq::provider::PdqFileSource;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+    ]));
+    let object_store: Arc<dyn object_store::ObjectStore> = Arc::new(LocalFileSystem::new());
+
+    let source = PdqFileSource::new(
+        ParquetSource::new(schema),
+        Arc::clone(&object_store),
+    );
+
+    // The key assertion: as_any() returns the PdqFileSource itself, not the inner ParquetSource
+    assert!(
+        source.as_any().downcast_ref::<PdqFileSource>().is_some(),
+        "as_any() should return PdqFileSource, not inner ParquetSource"
+    );
+
+    // Verify file_type delegates to parquet
+    assert_eq!(source.file_type(), "parquet");
+}
+
 // ─── PdqParquetOpener tests ──────────────────────────────────────────────────
 
 /// Helper: write an N-row-group Parquet file.

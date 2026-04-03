@@ -734,7 +734,8 @@ impl FileSource for PdqFileSource {
         base_config: &FileScanConfig,
         _partition: usize,
     ) -> datafusion::common::Result<Arc<dyn FileOpener>> {
-        let batch_size = base_config.batch_size.unwrap_or(8192);
+        const DEFAULT_BATCH_SIZE: usize = 8192; // DataFusion default
+        let batch_size = base_config.batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
         Ok(Arc::new(PdqParquetOpener::new(
             Arc::clone(&self.object_store),
             None, // projection — let DataFusion handle at a higher level
@@ -765,6 +766,12 @@ impl FileSource for PdqFileSource {
     fn file_type(&self) -> &str {
         self.inner.file_type()
     }
+
+    // INTENTIONAL: try_pushdown_filters() and try_pushdown_projection() are NOT forwarded.
+    // PDQ performs its own row-group pruning via FST index (Vec<usize> in PartitionedFile::extensions).
+    // Row-level filtering is handled by DataFusion's FilterExec downstream (TableProviderFilterPushDown::Inexact).
+    // Page-level Parquet pruning (bloom filters, page index) is intentionally traded away.
+    // Column projection is applied by DataFusion at the plan level (ProjectionExec).
 }
 
 #[cfg(test)]
