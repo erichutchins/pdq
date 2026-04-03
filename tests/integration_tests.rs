@@ -120,7 +120,7 @@ async fn create_test_parquet_files(dir: &Path, values: &[&str]) -> Result<Vec<Pa
     let props = WriterProperties::builder()
         .set_compression(Compression::SNAPPY)
         .set_encoding(Encoding::PLAIN)
-        .set_max_row_group_size(2)
+        .set_max_row_group_row_count(Some(2))
         .build();
 
     let mut writer = datafusion::parquet::arrow::ArrowWriter::try_new(

@@ -614,7 +614,6 @@ impl Default for PdqTableProviderBuilder {
 /// and returns the record batch stream.
 pub struct PdqParquetOpener {
     object_store: Arc<dyn ObjectStore>,
-    schema: SchemaRef,
     projection: Option<Vec<usize>>,
     batch_size: usize,
 }
@@ -622,11 +621,10 @@ pub struct PdqParquetOpener {
 impl PdqParquetOpener {
     pub fn new(
         object_store: Arc<dyn ObjectStore>,
-        schema: SchemaRef,
         projection: Option<Vec<usize>>,
         batch_size: usize,
     ) -> Self {
-        Self { object_store, schema, projection, batch_size }
+        Self { object_store, projection, batch_size }
     }
 }
 
@@ -687,7 +685,7 @@ impl FileOpener for PdqParquetOpener {
 
             let stream = builder.build()?;
             let mapped: BoxStream<'static, datafusion::common::Result<RecordBatch>> =
-                Box::pin(stream.map(|r| r.map_err(|e| DataFusionError::from(e))));
+                Box::pin(stream.map(|r| r.map_err(DataFusionError::from)));
             Ok(mapped)
         }))
     }

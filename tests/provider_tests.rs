@@ -46,7 +46,7 @@ async fn create_test_parquet_files(
                 WriterProperties::builder()
                     .set_compression(Compression::SNAPPY)
                     .set_encoding(Encoding::PLAIN)
-                    .set_max_row_group_size(rows_per_group)
+                    .set_max_row_group_row_count(Some(rows_per_group))
                     .build(),
             ),
         )?;
@@ -414,9 +414,8 @@ async fn write_nrg_parquet(
         Field::new("id", DataType::Int32, false),
         Field::new("value", DataType::Utf8, false),
     ]));
-    #[allow(deprecated)]
     let props = WriterProperties::builder()
-        .set_max_row_group_size(rows_per_rg)
+        .set_max_row_group_row_count(Some(rows_per_rg))
         .build();
     let mut writer = ArrowWriter::try_new(
         File::create(path)?,
@@ -472,15 +471,9 @@ async fn test_opener_reads_correct_row_groups() -> Result<(), Box<dyn std::error
     let file_path = tmp.path().join("test.parquet");
     write_nrg_parquet(&file_path, 3, 10).await?;
 
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new("value", DataType::Utf8, false),
-    ]));
-
     let object_store: Arc<dyn object_store::ObjectStore> = Arc::new(LocalFileSystem::new());
     let opener = PdqParquetOpener::new(
         object_store,
-        schema.clone(),
         None,    // projection: all columns
         1024,    // batch_size
     );
@@ -519,12 +512,8 @@ async fn test_opener_skips_stale_index() -> Result<(), Box<dyn std::error::Error
     let file_path = tmp.path().join("two_rg.parquet");
     write_nrg_parquet(&file_path, 2, 5).await?;
 
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new("value", DataType::Utf8, false),
-    ]));
     let object_store: Arc<dyn object_store::ObjectStore> = Arc::new(LocalFileSystem::new());
-    let opener = PdqParquetOpener::new(object_store, schema.clone(), None, 1024);
+    let opener = PdqParquetOpener::new(object_store, None, 1024);
 
     let pf = partitioned_file_with_row_groups(&file_path, vec![0, 99])?;
     let future = opener.open(pf)?;
@@ -560,12 +549,8 @@ async fn test_opener_empty_result_on_all_stale() -> Result<(), Box<dyn std::erro
     let file_path = tmp.path().join("two_rg.parquet");
     write_nrg_parquet(&file_path, 2, 5).await?;
 
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new("value", DataType::Utf8, false),
-    ]));
     let object_store: Arc<dyn object_store::ObjectStore> = Arc::new(LocalFileSystem::new());
-    let opener = PdqParquetOpener::new(object_store, schema.clone(), None, 1024);
+    let opener = PdqParquetOpener::new(object_store, None, 1024);
 
     let pf = partitioned_file_with_row_groups(&file_path, vec![99])?;
     let future = opener.open(pf)?;
