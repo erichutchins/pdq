@@ -12,7 +12,7 @@ use datafusion::catalog::Session;
 use datafusion::common::{DFSchema, DataFusionError, Result as DataFusionResult};
 use datafusion::datasource::TableProvider;
 use datafusion::datasource::listing::PartitionedFile;
-use datafusion::datasource::memory::DataSourceExec;
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::datasource::physical_plan::{
     FileScanConfigBuilder, ParquetFileReaderFactory, ParquetSource,
 };
@@ -288,9 +288,9 @@ impl TableProvider for PdqTableProvider {
         // CRITICAL OPTIMIZATION: If the index found no matches, return empty results immediately
         if file_row_groups.is_empty() {
             let object_store_url = ObjectStoreUrl::parse("file://")?;
-            let source = Arc::new(ParquetSource::default());
-            let config = FileScanConfigBuilder::new(object_store_url, self.schema.clone(), source)
-                .with_projection_indices(projection.cloned())
+            let source = Arc::new(ParquetSource::new(self.schema.clone()));
+            let config = FileScanConfigBuilder::new(object_store_url, source)
+                .with_projection_indices(projection.cloned())?
                 .with_limit(limit)
                 .build();
 
@@ -331,14 +331,14 @@ impl TableProvider for PdqTableProvider {
         }
 
         // Create ParquetSource with factory
-        let source = ParquetSource::default()
+        let source = ParquetSource::new(self.schema.clone())
             .with_predicate(predicate)
             .with_parquet_file_reader_factory(Arc::new(reader_factory));
 
         // Build file scan configuration
         let mut file_scan_config_builder =
-            FileScanConfigBuilder::new(object_store_url, self.schema.clone(), Arc::new(source))
-                .with_projection_indices(projection.cloned())
+            FileScanConfigBuilder::new(object_store_url, Arc::new(source))
+                .with_projection_indices(projection.cloned())?
                 .with_limit(limit);
 
         // Add files with row group level access plans based on FST index results
