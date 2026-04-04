@@ -290,6 +290,12 @@ impl TableProvider for PdqTableProvider {
             .prune_with_fst_index(filters)
             .map_err(|e| DataFusionError::Plan(format!("FST pruning failed: {e}")))?;
 
+        // Note: PDQ only returns results for equality filters on indexed columns.
+        // If filters is empty or contains no equality filters, prune_with_fst_index()
+        // returns an empty map and this method returns an empty DataSourceExec.
+        // Full-table scans without equality filters are not supported — callers
+        // should always provide equality predicates on indexed columns.
+
         let object_store_url = ObjectStoreUrl::parse("file://")?;
         let object_store = state
             .runtime_env()
@@ -330,10 +336,12 @@ impl TableProvider for PdqTableProvider {
         // Store Vec<usize> of matched row group indices in extensions.
         // PdqParquetOpener reads the footer and uses these indices at execution time.
         for (file_hash, row_groups) in &file_row_groups {
-            debug_assert!(
-                !row_groups.is_empty(),
-                "scan() should never emit a file with empty row groups"
-            );
+            // Skip files where filter intersection eliminated all row groups.
+            // This can happen when multiple equality filters on the same column
+            // produce non-overlapping row group sets.
+            if row_groups.is_empty() {
+                continue;
+            }
 
             if let Some(file_path) = hash_to_path.get(file_hash) {
                 let canonical_path = std::fs::canonicalize(file_path).map_err(|e| {
