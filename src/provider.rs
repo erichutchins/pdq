@@ -1,12 +1,10 @@
 use std::any::Any;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::Session;
@@ -15,24 +13,17 @@ use datafusion::datasource::TableProvider;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::datasource::physical_plan::{
-    FileScanConfigBuilder, FileSource, ParquetFileReaderFactory, ParquetSource,
+    FileScanConfigBuilder, FileSource, ParquetSource,
 };
 use datafusion::datasource::physical_plan::{FileOpenFuture, FileOpener, FileScanConfig};
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
-use datafusion::parquet::arrow::arrow_reader::{
-    ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
-};
-use datafusion::parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader, ParquetRecordBatchStreamBuilder};
+use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use datafusion::parquet::arrow::async_reader::{ParquetObjectReader, ParquetRecordBatchStreamBuilder};
 use datafusion::parquet::arrow::ProjectionMask;
-use datafusion::parquet::file::metadata::ParquetMetaData;
-use datafusion::parquet::file::reader::{FileReader, SerializedFileReader};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
-use futures::FutureExt;
 use futures::StreamExt;
-use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use object_store::ObjectStore;
 use rayon::prelude::*;
@@ -45,7 +36,6 @@ use crate::query::IndexQueryEngine;
 
 type PrunedRowGroups = HashMap<String, Vec<usize>>;
 type HashToPath = HashMap<String, PathBuf>;
-type MetadataMap = HashMap<String, Arc<ParquetMetaData>>;
 
 /// Enhanced PDQ TableProvider with DataFusion v49 improvements
 ///
@@ -209,58 +199,6 @@ impl PdqTableProvider {
         None
     }
 
-    /// Resolve file hashes to actual file paths and load metadata for them
-    fn load_pruned_metadata(
-        &self,
-        file_row_groups: &PrunedRowGroups,
-        hash_to_path: &HashToPath,
-    ) -> anyhow::Result<(HashToPath, MetadataMap)> {
-        let mut resolved_paths: HashMap<String, PathBuf> = HashMap::new();
-        let mut metadata_map: HashMap<String, Arc<ParquetMetaData>> = HashMap::new();
-
-        // Use the paths provided by the index engine results
-        // Use a subset of hash_to_path based on file_row_groups keys
-        let targets: Vec<(String, PathBuf)> = file_row_groups
-            .keys()
-            .filter_map(|h| hash_to_path.get(h).map(|p| (h.clone(), p.clone())))
-            .collect();
-
-        // Load metadata for resolved files in parallel
-        let loaded_metadata: Vec<(String, Arc<ParquetMetaData>)> = targets
-            .par_iter()
-            .filter_map(|(hash, path)| match std::fs::File::open(path) {
-                Ok(file) => match SerializedFileReader::new(file) {
-                    Ok(reader) => {
-                        let metadata = Arc::new(reader.metadata().clone());
-                        Some(Ok((hash.clone(), metadata)))
-                    }
-                    Err(e) => Some(Err(anyhow::anyhow!(
-                        "Failed to read parquet metadata for {}: {}",
-                        path.display(),
-                        e
-                    ))),
-                },
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    println!("Skipping missing parquet file: {}", path.display());
-                    None
-                }
-                Err(e) => Some(Err(anyhow::anyhow!(
-                    "Failed to open parquet file {}: {}",
-                    path.display(),
-                    e
-                ))),
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-
-        for (hash, metadata) in loaded_metadata {
-            if let Some(path) = hash_to_path.get(&hash) {
-                resolved_paths.insert(hash.clone(), path.clone());
-                metadata_map.insert(hash, metadata);
-            }
-        }
-
-        Ok((resolved_paths, metadata_map))
-    }
 }
 
 #[async_trait]
@@ -367,138 +305,6 @@ impl TableProvider for PdqTableProvider {
     ) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
         // PDQ can prune row groups with FST but still needs row-level filtering for all filters
         Ok(vec![TableProviderFilterPushDown::Inexact; filters.len()])
-    }
-}
-
-/// A custom `ParquetFileReaderFactory` that serves pre-loaded metadata
-#[derive(Debug)]
-struct CachedParquetFileReaderFactory {
-    object_store: Arc<dyn ObjectStore>,
-    /// Metadata keyed by absolute file path
-    metadata: HashMap<String, Arc<ParquetMetaData>>,
-}
-
-impl CachedParquetFileReaderFactory {
-    fn new(object_store: Arc<dyn ObjectStore>) -> Self {
-        Self {
-            object_store,
-            metadata: HashMap::new(),
-        }
-    }
-
-    fn add_metadata(&mut self, path: String, metadata: Arc<ParquetMetaData>) {
-        self.metadata.insert(path, metadata);
-    }
-}
-
-impl ParquetFileReaderFactory for CachedParquetFileReaderFactory {
-    fn create_reader(
-        &self,
-        _partition_index: usize,
-        partitioned_file: PartitionedFile,
-        metadata_size_hint: Option<usize>,
-        _metrics: &ExecutionPlanMetricsSet,
-    ) -> DataFusionResult<Box<dyn AsyncFileReader + Send>> {
-        let _filename = partitioned_file
-            .object_meta
-            .location
-            .parts()
-            .last()
-            .ok_or_else(|| DataFusionError::Plan("No path in location".to_string()))?
-            .as_ref()
-            .to_string();
-
-        // Convert location directly to string for lookup, assuming it matches what we stored
-        // Warning: DataFusion ObjectStore paths might differ slightly from OS paths (leading / etc)
-        // We stored canonicalized OS paths.
-        // For LocalFileSystem, the location usually matches.
-        // To be safe in `PdqTableProvider`, we should align these.
-        // But here we'll try to find it.
-        // Actually, let's use the full location path string.
-        let _full_path = partitioned_file.object_meta.location.to_string();
-        // The location in PartitionedFile comes from what we passed to FileScanConfigBuilder
-        // We passed `canonical_path.display().to_string()`
-
-        // Since we constructed PartitionedFile with canonical absolute paths, the location should map.
-        // However, object_store paths are URL-encoded/normalized.
-        // Let's try to lookup by the path we used to create the PartitionedFile.
-        // NOTE: In `scan`, we used `canonical_path.display().to_string()`.
-        // So `metadata` keys should match that.
-
-        // In local mode, we might need to be careful with "file://" prefix removal or addition.
-        // But simpler: we just iterate and find the one that ends with our filename or matches?
-        // No, O(1) lookup is needed.
-
-        // Let's rely on the fact that we populated `metadata` using `canonical_path.display().to_string()`
-        // AND we created `PartitionedFile` using `canonical_path.display().to_string()`.
-        // So the `partitioned_file.object_meta.location` *should* be that path (or converted to object store path).
-
-        // DataFusion converts string path to Path.
-        // Let's assume strict equality for now.
-        // If this fails, we might need a more robust normalization.
-
-        // Wait, `PartitionedFile::new(path, ...)` takes a string path.
-        // `object_store` location will wrap this.
-
-        let path_key = partitioned_file.object_meta.location.to_string();
-
-        // Fallback: Check if we have it under the exact key, or maybe try with/without leading slash
-        let path_key_slash = format!("/{}", path_key);
-        let metadata = self
-            .metadata
-            .get(&path_key)
-            .or_else(|| self.metadata.get(&path_key_slash))
-            .ok_or_else(|| {
-                DataFusionError::Plan(format!(
-                    "Metadata for file not found in cache: {}",
-                    path_key
-                ))
-            })?;
-
-        let object_store = Arc::clone(&self.object_store);
-        let mut inner =
-            ParquetObjectReader::new(object_store, partitioned_file.object_meta.location)
-                .with_file_size(partitioned_file.object_meta.size);
-
-        if let Some(hint) = metadata_size_hint {
-            inner = inner.with_footer_size_hint(hint);
-        }
-
-        Ok(Box::new(ParquetReaderWithCache {
-            metadata: Arc::clone(metadata),
-            inner,
-        }))
-    }
-}
-
-/// Wrapper around `ParquetObjectReader` that intercepts metadata requests
-struct ParquetReaderWithCache {
-    metadata: Arc<ParquetMetaData>,
-    inner: ParquetObjectReader,
-}
-
-impl AsyncFileReader for ParquetReaderWithCache {
-    fn get_bytes(
-        &mut self,
-        range: Range<u64>,
-    ) -> BoxFuture<'_, datafusion::parquet::errors::Result<Bytes>> {
-        self.inner.get_bytes(range)
-    }
-
-    fn get_byte_ranges(
-        &mut self,
-        ranges: Vec<Range<u64>>,
-    ) -> BoxFuture<'_, datafusion::parquet::errors::Result<Vec<Bytes>>> {
-        self.inner.get_byte_ranges(ranges)
-    }
-
-    fn get_metadata(
-        &mut self,
-        _options: Option<&ArrowReaderOptions>,
-    ) -> BoxFuture<'_, datafusion::parquet::errors::Result<Arc<ParquetMetaData>>> {
-        // Return cached metadata immediately, skipping I/O
-        let metadata = self.metadata.clone();
-        async move { Ok(metadata) }.boxed()
     }
 }
 
