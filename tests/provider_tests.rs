@@ -568,6 +568,41 @@ async fn test_opener_skips_stale_index() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
+/// Verify that querying for a nonexistent value returns zero rows.
+/// Pins the no-match → empty DataSourceExec path.
+#[tokio::test]
+async fn test_scan_returns_empty_for_no_match() -> Result<(), Box<dyn std::error::Error>> {
+    use datafusion::execution::context::SessionContext;
+    use pdq::index::Indexer;
+
+    let tmp = TempDir::new()?;
+    let data_dir = tmp.path().join("data");
+    let index_dir = tmp.path().join("index");
+    std::fs::create_dir_all(&data_dir)?;
+    std::fs::create_dir_all(&index_dir)?;
+
+    create_test_parquet_files(&data_dir, 1, 10, 10, &["alpha"]).await?;
+
+    let indexer = Indexer::new(index_dir.to_str().unwrap());
+    indexer.build_index(&data_dir, "value")?;
+
+    let provider = PdqTableProviderBuilder::new()
+        .with_index_dir(&index_dir)
+        .with_data_dir(&data_dir)
+        .build()
+        .await?;
+
+    let ctx = SessionContext::new();
+    ctx.register_table("t", Arc::new(provider))?;
+
+    let df = ctx.sql("SELECT count(*) as n FROM t WHERE value = 'nonexistent'").await?;
+    let results = df.collect().await?;
+    let count_arr = results[0].column(0).as_any()
+        .downcast_ref::<datafusion::arrow::array::Int64Array>().unwrap();
+    assert_eq!(count_arr.value(0), 0, "Expected zero rows for nonexistent value");
+    Ok(())
+}
+
 /// Open with row_groups=[99] only on a 2-row-group file.
 /// Assert zero batches produced (no panic, no error).
 #[tokio::test]

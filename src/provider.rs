@@ -285,119 +285,71 @@ impl TableProvider for PdqTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        // Use FST index to prune files and row groups
+        // FST lookups only — zero disk I/O at planning time
         let (file_row_groups, hash_to_path) = self
             .prune_with_fst_index(filters)
             .map_err(|e| DataFusionError::Plan(format!("FST pruning failed: {e}")))?;
 
-        // CRITICAL OPTIMIZATION: If the index found no matches, return empty results immediately
-        if file_row_groups.is_empty() {
-            let object_store_url = ObjectStoreUrl::parse("file://")?;
-            let source = Arc::new(ParquetSource::new(self.schema.clone()));
-            let config = FileScanConfigBuilder::new(object_store_url, source)
-                .with_projection_indices(projection.cloned())?
-                .with_limit(limit)
-                .build();
-
-            return Ok(DataSourceExec::from_data_source(config));
-        }
-
-        // Resolve paths and load metadata for relevant files
-        let (resolved_paths, metadata_map) = self
-            .load_pruned_metadata(&file_row_groups, &hash_to_path)
-            .map_err(|e| DataFusionError::Plan(format!("Failed to load metadata: {e}")))?;
-
-        // Convert filters to a single predicate for DataFusion
-        let df_schema = DFSchema::try_from(self.schema.clone())?;
-        let predicate = conjunction(filters.to_vec());
-        let predicate = predicate
-            .map(|predicate| state.create_physical_expr(predicate, &df_schema))
-            .transpose()?
-            .unwrap_or_else(|| datafusion::physical_expr::expressions::lit(true));
-
-        // Create the custom factory that will serve the pre-loaded metadata
         let object_store_url = ObjectStoreUrl::parse("file://")?;
         let object_store = state
             .runtime_env()
             .object_store(object_store_url.clone())
             .map_err(|e| DataFusionError::Plan(format!("Failed to get object store: {e}")))?;
 
-        let mut reader_factory = CachedParquetFileReaderFactory::new(object_store);
-
-        // Populate the factory with our metadata, keyed by the *absolute path* which is how DataFusion will request it
-        for (hash, metadata) in &metadata_map {
-            if let Some(path) = resolved_paths.get(hash) {
-                // Ensure absolute path for consistency
-                if let Ok(canonical_path) = std::fs::canonicalize(path) {
-                    reader_factory
-                        .add_metadata(canonical_path.display().to_string(), metadata.clone());
-                }
-            }
+        // No matches → empty plan immediately, no I/O
+        if file_row_groups.is_empty() {
+            let source = Arc::new(PdqFileSource::new(
+                ParquetSource::new(self.schema.clone()),
+                object_store,
+            ));
+            let config = FileScanConfigBuilder::new(object_store_url, source)
+                .with_projection_indices(projection.cloned())?
+                .with_limit(limit)
+                .build();
+            return Ok(DataSourceExec::from_data_source(config));
         }
 
-        // Create ParquetSource with factory
-        let source = ParquetSource::new(self.schema.clone())
-            .with_predicate(predicate)
-            .with_parquet_file_reader_factory(Arc::new(reader_factory));
+        // Build predicate for downstream FilterExec
+        let df_schema = DFSchema::try_from(self.schema.clone())?;
+        let predicate = conjunction(filters.to_vec());
+        let predicate = predicate
+            .map(|p| state.create_physical_expr(p, &df_schema))
+            .transpose()?
+            .unwrap_or_else(|| datafusion::physical_expr::expressions::lit(true));
 
-        // Build file scan configuration
+        let source = Arc::new(PdqFileSource::new(
+            ParquetSource::new(self.schema.clone()).with_predicate(predicate),
+            Arc::clone(&object_store),
+        ));
+
         let mut file_scan_config_builder =
-            FileScanConfigBuilder::new(object_store_url, Arc::new(source))
+            FileScanConfigBuilder::new(object_store_url, source)
                 .with_projection_indices(projection.cloned())?
                 .with_limit(limit);
 
-        // Add files with row group level access plans based on FST index results
+        // Store Vec<usize> of matched row group indices in extensions.
+        // PdqParquetOpener reads the footer and uses these indices at execution time.
         for (file_hash, row_groups) in &file_row_groups {
-            if let Some(file_path) = resolved_paths.get(file_hash) {
+            debug_assert!(
+                !row_groups.is_empty(),
+                "scan() should never emit a file with empty row groups"
+            );
+
+            if let Some(file_path) = hash_to_path.get(file_hash) {
                 let canonical_path = std::fs::canonicalize(file_path).map_err(|e| {
                     DataFusionError::Plan(format!("Path canonicalization failed: {e}"))
                 })?;
-
                 let file_size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
 
-                // Get total row groups from the metadata we just loaded (via the file factory logic,
-                // but here we can just assume valid since we loaded it)
-                // Or easier: we can't easily access the factory here, but we can assume the access plan creation
-                // is safe if we trust the FST.
-                // Ideally we'd look up the metadata again, but we just inserted it.
-                // Let's rely on the file system for size, but for total row groups we need metadata.
-                // We can re-open briefly or trust the FST.
-                // Actually, ParquetAccessPlan::new_none requires total row groups.
-                // We SHOULD iterate our already loaded metadata.
+                let mut partitioned_file =
+                    PartitionedFile::new(canonical_path.display().to_string(), file_size);
+                partitioned_file.extensions = Some(Arc::new(row_groups.clone()));
 
-                // Let's find the metadata for this file_hash again. (Optimize later if needed, n is small)
-                // Wait, we lost the mapping from hash -> metadata in the factory step.
-                // Actually `metadata_map` is locally available!
-
-                // FIX: We have `metadata_map: HashMap<String, Arc<ParquetMetaData>>` where key is hash.
-                if let Some(metadata) = metadata_map.get(file_hash) {
-                    // Use metadata_map!
-                    let total_row_groups = metadata.num_row_groups();
-
-                    // Create access plan that initially scans no row groups
-                    let mut access_plan = ParquetAccessPlan::new_none(total_row_groups);
-
-                    // Enable scanning only for the row groups that contain our target values
-                    for &row_group_idx in row_groups {
-                        if row_group_idx < total_row_groups {
-                            access_plan.scan(row_group_idx);
-                        }
-                    }
-
-                    // Create partitioned file with the access plan
-                    let mut partitioned_file =
-                        PartitionedFile::new(canonical_path.display().to_string(), file_size);
-                    partitioned_file.extensions = Some(Arc::new(access_plan));
-
-                    file_scan_config_builder = file_scan_config_builder.with_file(partitioned_file);
-                }
+                file_scan_config_builder = file_scan_config_builder.with_file(partitioned_file);
             }
         }
 
-        // Create execution plan using the DataSourceExec pattern
-        Ok(DataSourceExec::from_data_source(
-            file_scan_config_builder.build(),
-        ))
+        Ok(DataSourceExec::from_data_source(file_scan_config_builder.build()))
     }
 
     /// Enhanced filter pushdown support with FST-aware categorization
@@ -767,11 +719,25 @@ impl FileSource for PdqFileSource {
         self.inner.file_type()
     }
 
-    // INTENTIONAL: try_pushdown_filters() and try_pushdown_projection() are NOT forwarded.
+    /// Forward projection pushdown to the inner ParquetSource, then re-wrap in PdqFileSource.
+    /// This is required for FileScanConfigBuilder::with_projection_indices() to succeed.
+    fn try_pushdown_projection(
+        &self,
+        projection: &datafusion::physical_expr::projection::ProjectionExprs,
+    ) -> datafusion::common::Result<Option<Arc<dyn FileSource>>> {
+        match self.inner.try_pushdown_projection(projection)? {
+            Some(new_inner) => Ok(Some(Arc::new(PdqFileSource {
+                inner: new_inner,
+                object_store: Arc::clone(&self.object_store),
+            }))),
+            None => Ok(None),
+        }
+    }
+
+    // INTENTIONAL: try_pushdown_filters() is NOT forwarded.
     // PDQ performs its own row-group pruning via FST index (Vec<usize> in PartitionedFile::extensions).
     // Row-level filtering is handled by DataFusion's FilterExec downstream (TableProviderFilterPushDown::Inexact).
     // Page-level Parquet pruning (bloom filters, page index) is intentionally traded away.
-    // Column projection is applied by DataFusion at the plan level (ProjectionExec).
 }
 
 #[cfg(test)]
