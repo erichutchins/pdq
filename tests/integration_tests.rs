@@ -166,6 +166,211 @@ async fn test_multifile_parallel_scan() -> Result<()> {
     Ok(())
 }
 
+/// Write a single-column (Utf8) Parquet file. `rows_per_group` controls row
+/// group size so tests can create multi-row-group files.
+fn write_string_parquet(
+    path: &Path,
+    column: &str,
+    values: &[&str],
+    rows_per_group: usize,
+) -> Result<()> {
+    let schema = Arc::new(Schema::new(vec![Field::new(column, DataType::Utf8, false)]));
+    let props = WriterProperties::builder()
+        .set_max_row_group_row_count(Some(rows_per_group.max(1)))
+        .build();
+    let mut writer = datafusion::parquet::arrow::ArrowWriter::try_new(
+        File::create(path)?,
+        schema.clone(),
+        Some(props),
+    )?;
+    writer.write(&RecordBatch::try_new(
+        schema,
+        vec![Arc::new(StringArray::from(values.to_vec()))],
+    )?)?;
+    writer.close()?;
+    Ok(())
+}
+
+/// Return the single per-file index directory under `index_dir` (for tests that
+/// index exactly one Parquet file).
+fn single_index_dir(index_dir: &Path) -> Result<PathBuf> {
+    let mut dirs: Vec<PathBuf> = fs::read_dir(index_dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    assert_eq!(dirs.len(), 1, "expected exactly one index directory");
+    Ok(dirs.remove(0))
+}
+
+/// Incremental indexing: an unchanged file is skipped (its FST is not
+/// rewritten); a changed file is re-indexed (old values gone, new present).
+#[test]
+fn test_incremental_indexing() -> Result<()> {
+    let dir = TempDir::new()?;
+    let data_dir = dir.path().join("data");
+    let index_dir = dir.path().join("index");
+    fs::create_dir_all(&data_dir)?;
+
+    let file = data_dir.join("f.parquet");
+    write_string_parquet(&file, "value", &["alpha", "alpha"], 2)?;
+
+    let indexer = Indexer::new(index_dir.to_str().unwrap());
+    indexer.build_index(&data_dir, "value")?;
+
+    let fst = single_index_dir(&index_dir)?.join("value.fst");
+    let mtime1 = fs::metadata(&fst)?.modified()?;
+
+    // Re-index with no change → file is skipped, FST not rewritten.
+    indexer.build_index(&data_dir, "value")?;
+    let mtime2 = fs::metadata(&fst)?.modified()?;
+    assert_eq!(
+        mtime1, mtime2,
+        "unchanged file should be skipped (FST untouched)"
+    );
+
+    // Change the file (different content and size) → it is re-indexed.
+    write_string_parquet(&file, "value", &["beta", "beta", "beta", "beta"], 2)?;
+    indexer.build_index(&data_dir, "value")?;
+
+    let engine = IndexQueryEngine::new(&index_dir);
+    assert!(
+        !engine.exact_search("value", "beta")?.is_empty(),
+        "new value should be indexed after the file changes"
+    );
+    assert!(
+        engine.exact_search("value", "alpha")?.is_empty(),
+        "stale value should be gone after re-indexing"
+    );
+    Ok(())
+}
+
+/// `prune_orphans` removes index directories whose source Parquet file is gone,
+/// leaving the rest intact.
+#[test]
+fn test_prune_orphans() -> Result<()> {
+    let dir = TempDir::new()?;
+    let data_dir = dir.path().join("data");
+    let index_dir = dir.path().join("index");
+    fs::create_dir_all(&data_dir)?;
+
+    let f1 = data_dir.join("f1.parquet");
+    let f2 = data_dir.join("f2.parquet");
+    write_string_parquet(&f1, "value", &["a", "a"], 2)?;
+    write_string_parquet(&f2, "value", &["b", "b"], 2)?;
+
+    let indexer = Indexer::new(index_dir.to_str().unwrap());
+    indexer.build_index(&data_dir, "value")?;
+
+    let index_dir_count = || -> usize {
+        fs::read_dir(&index_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .count()
+    };
+    assert_eq!(index_dir_count(), 2);
+
+    fs::remove_file(&f1)?;
+    let pruned = indexer.prune_orphans()?;
+    assert_eq!(pruned, 1, "exactly one orphan index should be pruned");
+    assert_eq!(index_dir_count(), 1);
+
+    let engine = IndexQueryEngine::new(&index_dir);
+    assert!(!engine.exact_search("value", "b")?.is_empty());
+    assert!(engine.exact_search("value", "a")?.is_empty());
+    Ok(())
+}
+
+/// A query tolerates a Parquet file that was removed after indexing: the
+/// missing file is skipped and rows from surviving files are still returned.
+#[tokio::test]
+async fn test_query_skips_missing_parquet_file() -> Result<()> {
+    let dir = TempDir::new()?;
+    let data_dir = dir.path().join("data");
+    let index_dir = dir.path().join("index");
+    fs::create_dir_all(&data_dir)?;
+
+    let f1 = data_dir.join("f1.parquet");
+    let f2 = data_dir.join("f2.parquet");
+    write_string_parquet(&f1, "value", &["needle", "needle"], 2)?;
+    write_string_parquet(&f2, "value", &["needle", "needle"], 2)?;
+
+    Indexer::new(index_dir.to_str().unwrap()).build_index(&data_dir, "value")?;
+
+    // Build the provider (schema inference) before removing a file.
+    let provider = PdqTableProviderBuilder::new()
+        .with_index_dir(&index_dir)
+        .with_data_dir(&data_dir)
+        .build()
+        .await?;
+
+    // Remove one Parquet file; the index still references it.
+    fs::remove_file(&f1)?;
+
+    let ctx = SessionContext::new();
+    ctx.register_table("t", Arc::new(provider))?;
+    let df = ctx
+        .sql("SELECT count(*) as n FROM t WHERE value = 'needle'")
+        .await?;
+    let results = df.collect().await?;
+    let n = results[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<datafusion::arrow::array::Int64Array>()
+        .unwrap()
+        .value(0);
+    assert_eq!(
+        n, 2,
+        "rows from the surviving file should still be returned"
+    );
+    Ok(())
+}
+
+/// A legacy index whose metadata predates row-group-count recording still works:
+/// the provider falls back to reading the Parquet footer for the count.
+#[tokio::test]
+async fn test_query_with_legacy_index_metadata() -> Result<()> {
+    let dir = TempDir::new()?;
+    let data_dir = dir.path().join("data");
+    let index_dir = dir.path().join("index");
+    fs::create_dir_all(&data_dir)?;
+
+    let file = data_dir.join("f.parquet");
+    write_string_parquet(&file, "value", &["x", "x", "x"], 1)?; // 3 row groups
+
+    Indexer::new(index_dir.to_str().unwrap()).build_index(&data_dir, "value")?;
+
+    // Strip the row-group-count line (line 4) to simulate a pre-upgrade index.
+    let meta = single_index_dir(&index_dir)?.join("metadata.txt");
+    let legacy: String = fs::read_to_string(&meta)?
+        .lines()
+        .take(3)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    fs::write(&meta, legacy)?;
+
+    let provider = PdqTableProviderBuilder::new()
+        .with_index_dir(&index_dir)
+        .with_data_dir(&data_dir)
+        .build()
+        .await?;
+    let ctx = SessionContext::new();
+    ctx.register_table("t", Arc::new(provider))?;
+    let df = ctx
+        .sql("SELECT count(*) as n FROM t WHERE value = 'x'")
+        .await?;
+    let results = df.collect().await?;
+    let n = results[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<datafusion::arrow::array::Int64Array>()
+        .unwrap()
+        .value(0);
+    assert_eq!(n, 3, "footer fallback should recover the row-group count");
+    Ok(())
+}
+
 /// Creates test Parquet files with predictable data for testing.
 async fn create_test_parquet_files(dir: &Path, values: &[&str]) -> Result<Vec<PathBuf>> {
     // Define schema: id (int32) and value (string)

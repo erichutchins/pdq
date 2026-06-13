@@ -266,7 +266,17 @@ impl TableProvider for PdqTableProvider {
                 continue;
             };
 
-            let total_rgs = self.row_group_count(file_hash, file_path)?;
+            // Skip files removed since indexing (canonicalize fails). Queries
+            // tolerate stale indexes whose Parquet files are gone; run `index
+            // --prune` to drop the orphan indexes.
+            let Ok(canonical_path) = std::fs::canonicalize(file_path) else {
+                continue;
+            };
+            let file_size = std::fs::metadata(&canonical_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            let total_rgs = self.row_group_count(file_hash, &canonical_path)?;
             let mut access_plan = ParquetAccessPlan::new_none(total_rgs);
             for &rg in row_groups {
                 if rg < total_rgs {
@@ -277,10 +287,6 @@ impl TableProvider for PdqTableProvider {
             if access_plan.row_group_indexes().is_empty() {
                 continue;
             }
-
-            let canonical_path = std::fs::canonicalize(file_path)
-                .map_err(|e| DataFusionError::Plan(format!("Path canonicalization failed: {e}")))?;
-            let file_size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
 
             let partitioned_file =
                 PartitionedFile::new(canonical_path.display().to_string(), file_size)
