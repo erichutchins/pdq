@@ -8,6 +8,10 @@ dynamic = ["version"]
 description = "Fast Parquet Data Query using FST-based indices"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Eric Hutchins", email = "REDACTED" }]
+keywords = ["parquet", "fst", "datafusion", "search", "index", "arrow"]
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
@@ -16,6 +20,11 @@ classifiers = [
 dependencies = [
     "pyarrow>=22.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/erichutchins/pdq"
+Repository = "https://github.com/erichutchins/pdq"
+Issues = "https://github.com/erichutchins/pdq/issues"
 
 [dependency-groups]
 dev = [
@@ -41,7 +50,8 @@ include = [
 ]
 locked = true
 manifest-path = "Cargo.toml"
-profile = "dev"
+# Published wheels should be optimized; CI overrides with --release as well.
+profile = "release"
 
 [tool.ruff]
 line-length = 90
