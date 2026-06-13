@@ -8,17 +8,20 @@ PDQ is a high-performance search engine for Parquet files that combines FST (Fin
 
 ### 🎯 **Core Capabilities**
 
-- **Exact match searches** with microsecond-level FST lookups
-- **Prefix searches** for pattern matching (e.g., IP subnets)
-- **Range queries** for numerical and lexicographic ranges
-- **AND/OR query logic** for complex search conditions
-- **Native JSONL output** with full Arrow type support
-- **Cross-platform compatibility** (Windows, Linux, macOS)
+- **Exact-match queries** over Parquet via SQL/DataFusion, with microsecond FST lookups
+- **Prefix and lexicographic range lookups** at the index level (`search` subcommand / Python API)
+- **String-valued columns** are indexed (IPs, hashes, IDs, user agents, etc.)
+- **CSV / JSONL / table output** with full Arrow type support
+- **Cross-platform** (Windows, Linux, macOS)
+
+> Note: PDQ indexes string (`Utf8`) columns. The `query` (SQL) path resolves
+> **exact-match** equality predicates; prefix and range matching are available
+> as index-level lookups via the `search` subcommand and the Python API.
 
 ### 🔥 **ParquetAccessPlan Integration**
 
 - **True row-group level optimization** using DataFusion's latest APIs
-- **Zero I/O queries** for searches with no matches (< 2ms response time)
+- **Zero-I/O queries** for searches with no matches (returns without reading any Parquet data)
 - **Multi-core parallel FST processing** for maximum throughput
 
 ## 🚀 Quick Start
@@ -37,11 +40,12 @@ cargo build --release
 ### Basic Usage
 
 ```bash
-# 1. Index your Parquet files
+# 1. Index a column across your Parquet files (index stored in ./pdq-index)
 ./target/release/pdq index --path ./logs/ --column src_ip
 
-# 2. Search with ParquetAccessPlan optimization
-./target/release/pdq query --column src_ip --term 192.168.1.100 --output jsonl
+# 2. Query the data for an exact match (returns matching rows)
+./target/release/pdq query --column src_ip --term 192.168.1.100 \
+    --data-path ./logs/ --format jsonl
 ```
 
 ## 📊 Performance
@@ -83,37 +87,48 @@ reproduce, not extrapolations, so this README sticks to measured results.
 ### Multi-Column Indexing
 
 ```bash
-# Index multiple columns for comprehensive search
+# Index multiple string columns for comprehensive search
 ./target/release/pdq index --path ./logs/ --column src_ip
 ./target/release/pdq index --path ./logs/ --column dst_ip
 ./target/release/pdq index --path ./logs/ --column user_agent
-./target/release/pdq index --path ./logs/ --column status_code
+./target/release/pdq index --path ./logs/ --column session_id
 ```
 
-### Complex Queries
+### Index-level lookups (`search`)
+
+The `search` subcommand resolves a term against the index and prints the matching
+files and row groups (no data is read). It supports exact, prefix, and
+lexicographic range lookups via `--type`:
 
 ```bash
-# Exact match with statistics
-./target/release/pdq query --column src_ip --term 192.168.1.100 --stats
+# Exact match (default)
+./target/release/pdq search --column src_ip --term 192.168.1.100
 
-# Prefix search for IP subnet
-./target/release/pdq query --column src_ip --prefix 192.168.1 --output csv
+# Prefix match — e.g. an IP subnet
+./target/release/pdq search --column src_ip --term 192.168.1 --type prefix
 
-# Range query for status codes
-./target/release/pdq query --column status_code --range 200:299 --limit 1000
+# Lexicographic range starting at a term
+./target/release/pdq search --column user_agent --term Mozilla --type range
 ```
 
-### Output Formats
+### Querying data (`query`)
+
+The `query` subcommand runs a DataFusion exact-match query and returns the
+matching rows. It requires `--data-path` (where the Parquet files live) and
+chooses output via `--format` (`table`, `csv`, `jsonl`); `--output <file>` writes
+to a file instead of stdout.
 
 ```bash
-# JSONL (default) - best for log analysis
-./target/release/pdq query --column src_ip --term 192.168.1.100 --output jsonl
+# Pretty table (default)
+./target/release/pdq query --column src_ip --term 192.168.1.100 --data-path ./logs/
 
-# CSV - best for spreadsheet analysis
-./target/release/pdq query --column src_ip --term 192.168.1.100 --output csv
+# JSONL — best for log pipelines
+./target/release/pdq query --column src_ip --term 192.168.1.100 \
+    --data-path ./logs/ --format jsonl
 
-# Table - pretty printed for humans
-./target/release/pdq query --column src_ip --term 192.168.1.100 --format table
+# CSV to a file
+./target/release/pdq query --column src_ip --term 192.168.1.100 \
+    --data-path ./logs/ --format csv --output results.csv
 ```
 
 ## 🧪 Simulation & Testing
@@ -154,24 +169,30 @@ Queries will gracefully skip any missing Parquet files that are still present in
 
 ### Query with Results
 
+PDQ prints which files and row groups the index selected, then the matching rows
+in the requested format:
+
 ```bash
-$ ./target/release/pdq query --column src_ip --term 192.168.1.100
+$ ./target/release/pdq query --column src_ip --term 192.168.1.100 \
+      --data-path ./logs/ --format jsonl
 
-{"timestamp":"2024-01-01T10:00:00Z","src_ip":"192.168.1.100","dst_ip":"10.0.0.1","bytes":1024,"status":"200"}
-{"timestamp":"2024-01-01T10:01:00Z","src_ip":"192.168.1.100","dst_ip":"10.0.0.2","bytes":2048,"status":"404"}
-{"timestamp":"2024-01-01T10:02:00Z","src_ip":"192.168.1.100","dst_ip":"10.0.0.3","bytes":3072,"status":"200"}
-
-[INFO] PDQ Optimization: Scanning 2/100 files, 4/2000 row groups (99.8% I/O reduction)
-[INFO] Query completed in 47ms
+📊 Index Results:
+   Found 4 matching row groups across 2 files
+🎯 Query Complete!
+{"timestamp":"2024-01-01T10:00:00Z","src_ip":"192.168.1.100","dst_ip":"10.0.0.1"}
+{"timestamp":"2024-01-01T10:01:00Z","src_ip":"192.168.1.100","dst_ip":"10.0.0.2"}
 ```
 
 ### Query with No Results
 
-```bash
-$ ./target/release/pdq query --column src_ip --term 192.168.999.999
+When the index has no matches, the query returns immediately without reading any
+Parquet data (the zero-I/O fast path):
 
-[INFO] PDQ Optimization: Zero I/O - No matches found in index
-[INFO] Query completed in 1ms
+```bash
+$ ./target/release/pdq query --column src_ip --term 192.168.999.999 --data-path ./logs/
+
+⚡ ZERO-MATCH OPTIMIZATION TRIGGERED!
+   Result: No matches found (authoritative from index)
 ```
 
 ## 🛠️ Development Setup
@@ -219,43 +240,47 @@ pdq/
 
 ## 📈 Use Cases
 
+Columns are indexed as strings, so numeric fields should be stored/queried as
+their string representation. Exact match uses `query`; subnet/path prefixes use
+`search --type prefix`.
+
 ### Cybersecurity Log Analysis
 
 ```bash
-# Find all connections from suspicious IP
-./target/release/pdq query --column src_ip --term 192.168.1.100
+# Find all connections from a suspicious IP (exact match)
+./target/release/pdq query --column src_ip --term 192.168.1.100 --data-path ./logs/
 
-# Investigate HTTP 4xx/5xx errors
-./target/release/pdq query --column status_code --range 400:599
+# Look up a specific HTTP status code
+./target/release/pdq query --column status_code --term 404 --data-path ./logs/
 
-# Track user agent patterns
-./target/release/pdq query --column user_agent --prefix "Mozilla/5.0"
+# Find which files/row groups hold a user-agent prefix (index lookup)
+./target/release/pdq search --column user_agent --term "Mozilla/5.0" --type prefix
 ```
 
 ### Network Traffic Analysis
 
 ```bash
-# Find high-bandwidth connections
-./target/release/pdq query --column bytes --range 1000000:999999999
+# Track a specific port
+./target/release/pdq query --column dst_port --term 443 --data-path ./traffic/
 
-# Track specific ports
-./target/release/pdq query --column dst_port --term 443
+# Analyze a protocol
+./target/release/pdq query --column protocol --term TCP --data-path ./traffic/
 
-# Analyze protocol distribution
-./target/release/pdq query --column protocol --term TCP
+# Find destinations in a subnet (prefix index lookup)
+./target/release/pdq search --column dst_ip --term 10.0.0 --type prefix
 ```
 
 ### Application Log Analysis
 
 ```bash
-# Find error patterns
-./target/release/pdq query --column level --term ERROR
+# Find error-level logs
+./target/release/pdq query --column level --term ERROR --data-path ./app-logs/
 
-# Track user sessions
-./target/release/pdq query --column session_id --term abc123
+# Track a user session
+./target/release/pdq query --column session_id --term abc123 --data-path ./app-logs/
 
-# Monitor API endpoints
-./target/release/pdq query --column endpoint --prefix /api/v1/
+# Find endpoints under a path prefix (index lookup)
+./target/release/pdq search --column endpoint --term /api/v1/ --type prefix
 ```
 
 ## 🔬 Technical Deep Dive
