@@ -602,4 +602,112 @@ mod tests {
 
         Ok(())
     }
+
+    /// Build an FST at `<index_dir>/<file_hash>/<column>.fst` from `value\x00rgN` keys.
+    fn write_test_fst(
+        index_dir: &Path,
+        file_hash: &str,
+        column: &str,
+        keys: &[&str],
+    ) -> Result<()> {
+        let dir = index_dir.join(file_hash);
+        fs::create_dir_all(&dir)?;
+        let mut writer = std::io::BufWriter::new(File::create(dir.join(format!("{column}.fst")))?);
+        let mut builder = SetBuilder::new(&mut writer)?;
+        for key in keys {
+            builder.insert(key)?;
+        }
+        builder.finish()?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_range_search() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let index_dir = temp_dir.path().join("test-index");
+        fs::create_dir_all(&index_dir)?;
+
+        let sep = key_format::VALUE_RG_SEPARATOR;
+        write_test_fst(
+            &index_dir,
+            "rangehash",
+            "code",
+            &[
+                &format!("100{sep}rg0"),
+                &format!("150{sep}rg1"),
+                &format!("200{sep}rg2"),
+                &format!("250{sep}rg3"),
+                &format!("300{sep}rg4"),
+            ],
+        )?;
+
+        let engine = IndexQueryEngine::new(&index_dir);
+        // Lexicographic range [150, 250] inclusive → row groups 1, 2, 3.
+        let results = engine.range_search("code", "150", "250")?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].row_groups, vec![1, 2, 3]);
+
+        // A range below everything matches nothing.
+        assert!(engine.range_search("code", "000", "099")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_available_columns() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let index_dir = temp_dir.path().join("test-index");
+        fs::create_dir_all(&index_dir)?;
+
+        let sep = key_format::VALUE_RG_SEPARATOR;
+        write_test_fst(&index_dir, "h1", "src_ip", &[&format!("1.2.3.4{sep}rg0")])?;
+        write_test_fst(&index_dir, "h1", "dst_ip", &[&format!("5.6.7.8{sep}rg0")])?;
+        // A non-fst sidecar file should be ignored.
+        fs::write(index_dir.join("h1").join("metadata.txt"), "x\n")?;
+
+        let engine = IndexQueryEngine::new(&index_dir);
+        let columns = engine.get_available_columns("h1")?;
+        assert_eq!(columns, vec!["dst_ip".to_string(), "src_ip".to_string()]);
+
+        // Unknown hash → no columns.
+        assert!(engine.get_available_columns("missing")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_indexed_files() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let index_dir = temp_dir.path().join("test-index");
+        fs::create_dir_all(&index_dir)?;
+
+        let sep = key_format::VALUE_RG_SEPARATOR;
+        write_test_fst(&index_dir, "ha", "value", &[&format!("a{sep}rg0")])?;
+        write_test_fst(&index_dir, "hb", "value", &[&format!("b{sep}rg0")])?;
+
+        let engine = IndexQueryEngine::new(&index_dir);
+        let mut hashes = engine.list_indexed_files()?;
+        hashes.sort();
+        assert_eq!(hashes, vec!["ha".to_string(), "hb".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolve_file_paths() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let data_dir = temp_dir.path().join("data");
+        fs::create_dir_all(&data_dir)?;
+
+        // resolve_file_paths only hashes the path string; file contents are irrelevant.
+        let a = data_dir.join("a.parquet");
+        let b = data_dir.join("b.parquet");
+        fs::write(&a, b"")?;
+        fs::write(&b, b"")?;
+        let hash_a = calculate_file_hash(&a.to_string_lossy())?;
+
+        let engine = IndexQueryEngine::new(temp_dir.path().join("index"));
+        let resolved = engine.resolve_file_paths(std::slice::from_ref(&hash_a), &data_dir)?;
+
+        assert_eq!(resolved.len(), 1, "only the requested hash should resolve");
+        assert_eq!(resolved.get(&hash_a), Some(&a));
+        Ok(())
+    }
 }
