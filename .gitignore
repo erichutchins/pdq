@@ -19,3 +19,17 @@ wheels/
 # Added by cargo
 
 /target
+
+# macOS
+.DS_Store
+
+# Agent / editor tooling and local config
+.agent/
+.claude/
+
+# Local benchmark output and scratch data
+bench_results*.md
+/test_incremental/
+
+# Local reference checkout of external repos (e.g. a datafusion clone)
+/reference/

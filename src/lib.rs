@@ -38,6 +38,19 @@ pub mod key_format {
 pub use provider::{PdqTableProvider, PdqTableProviderBuilder};
 pub use query::IndexQueryEngine;
 
+/// Calculates a stable hash from a file path.
+///
+/// This hash is used to create a unique and filesystem-friendly identifier for a file's
+/// index directory within the global index storage. (Note: it's a hash of the path itself --
+/// not a hash of the file contents.)
+///
+/// # Parameters
+///
+/// * `file_path` - The path to the file to hash
+///
+/// # Returns
+///
+/// A `Result` containing the hexadecimal string representation of the hash
 pub fn calculate_file_hash(file_path: &str) -> anyhow::Result<String> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
