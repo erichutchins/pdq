@@ -27,7 +27,7 @@ PDQ is a high-performance search engine for Parquet files that combines FST (Fin
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/pdq.git
+git clone https://github.com/erichutchins/pdq.git
 cd pdq
 
 # Build the project
@@ -44,29 +44,18 @@ cargo build --release
 ./target/release/pdq query --column src_ip --term 192.168.1.100 --output jsonl
 ```
 
-## 📊 Projected Performance at Scale
+## 📊 Performance
 
-The following metrics represent the **projected** performance of PDQ when searching large-scale cybersecurity log datasets (e.g., 1TB+), where I/O bottlenecking usually dominates.
+PDQ's advantage comes from reading less data. An FST lookup identifies the exact
+row groups that can contain a value, so a query reads only those row groups
+instead of scanning every file. A query with no index matches returns without
+touching the Parquet files at all.
 
-| Metric                    | Brute Force Parquet Scan | PDQ (Optimized)         | Projected Improvement      |
-| ------------------------- | ------------------------ | ----------------------- | -------------------------- |
-| **Query Time (match)**    | 30-60 seconds            | 20-100ms                | **500x-2000x faster**      |
-| **Query Time (no match)** | 30-60 seconds            | <2ms                    | **>15,000x faster**        |
-| **Data Read**             | 1TB (full scan)          | 0.1-10MB                | **100x-50,000x reduction** |
-| **Memory Usage**          | High (GB buffering)      | Minimal (MB)            | **100x reduction**         |
-| **CPU Utilization**       | Single-threaded (I/O)    | Multi-core parallel     | **Linear scaling**         |
-
-> *Note: These figures are representative based on I/O reduction ratios. Actual performance depends on hardware (SSD vs. Network Storage) and index cardinality.*
-
-### Illustrative Scenario (at Scale)
-
-Searching 1TB of cybersecurity logs (Expected Behavior):
-
-```bash
-# Traditional approach (Full scan): ~45 seconds, reads 1TB
-# PDQ approach (Indexed): ~50ms, reads 2MB
-./target/release/pdq query --column src_ip --term 192.168.1.100
-```
+Measured numbers on a local microbenchmark are in
+[Baseline Benchmarks](#-baseline-benchmarks-simulated) below. Because query time is driven
+by how much data is read rather than the total dataset size, the gap over a full
+scan widens as datasets grow — but the figures that matter are the ones you can
+reproduce, not extrapolations, so this README sticks to measured results.
 
 ## 🏗️ Architecture Overview
 
@@ -189,23 +178,26 @@ $ ./target/release/pdq query --column src_ip --term 192.168.999.999
 
 ### Prerequisites
 
-- Rust >= 1.70
-- Cargo
-- Apache Arrow/DataFusion 0.40+
+- A recent Rust toolchain (edition 2024; Rust 1.85+)
+- [`uv`](https://github.com/astral-sh/uv) for building/testing the Python bindings
+
+DataFusion, Arrow, and Parquet are pulled in as crate dependencies — nothing to install separately.
 
 ### Building from Source
 
 ```bash
-# Clone and build
-git clone https://github.com/your-org/pdq.git
+# Clone and build the CLI
+git clone https://github.com/erichutchins/pdq.git
 cd pdq
 cargo build --release
 
-# Run tests
+# Run the Rust tests
 cargo test
 
-# Run benchmarks
-cargo bench
+# Build and test the Python bindings
+uv sync
+uv run maturin develop
+uv run pytest tests/test_pdq.py
 ```
 
 ### Project Structure
@@ -213,18 +205,16 @@ cargo bench
 ```
 pdq/
 ├── src/
-│   ├── lib.rs              # Core library
-│   ├── index.rs            # FST index builder
-│   ├── query.rs            # Multi-core FST search
-│   ├── access_plan.rs      # ParquetAccessPlan integration
-│   ├── scan_optimized.rs   # Optimized DataFusion scanner
-│   ├── provider.rs         # DataFusion TableProvider
-│   └── parquet_filter.rs   # Output formatting
-├── bin/
-│   └── pdq.rs              # CLI application
-├── examples/
-│   └── access_plan_demo.rs # ParquetAccessPlan example
-└── README.md               # This file
+│   ├── lib.rs             # Crate root, key-format constants, file hashing
+│   ├── index.rs           # FST index builder
+│   ├── query.rs           # Multi-core FST search engine
+│   ├── provider.rs        # DataFusion TableProvider (ParquetAccessPlan pruning)
+│   ├── parquet_filter.rs  # Output formatting
+│   ├── py_module.rs       # PyO3 Python bindings
+│   └── bin/pdq.rs         # CLI application
+├── python/pdq/            # Python package (convenience wrappers)
+├── tests/                 # Rust integration tests + pytest suite
+└── misc/                  # uv helper scripts (test-data fabrication, benchmarks)
 ```
 
 ## 📈 Use Cases
@@ -288,19 +278,19 @@ Example:
 
 ### ParquetAccessPlan Integration
 
-```rust
-// Create access plan that only scans specific row groups
-let mut access_plan = ParquetAccessPlan::new_none(total_row_groups);
+PDQ uses DataFusion's standard secondary-index pattern: build a `ParquetAccessPlan`
+and attach it to the file via `PartitionedFile` extensions, then let the stock
+`ParquetSource` run the scan.
 
-// Mark only relevant row groups for scanning
-for &row_group_idx in &selected_row_groups {
+```rust
+// Build an access plan that scans only the matched row groups
+let mut access_plan = ParquetAccessPlan::new_none(total_row_groups);
+for &row_group_idx in &matched_row_groups {
     access_plan.scan(row_group_idx);
 }
 
-// DataFusion reads only the marked row groups
-let parquet_exec = ParquetExec::builder(config)
-    .with_row_groups(access_plan.row_group_indexes())
-    .build();
+// Attach it to the file; DataFusion's ParquetSource honors it at execution time
+let file = PartitionedFile::new(path, size).with_extension(access_plan);
 ```
 
 ### Zero I/O Optimization
@@ -339,7 +329,7 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 ```bash
 # Fork and clone
-git clone https://github.com/your-username/pdq.git
+git clone https://github.com/erichutchins/pdq.git
 
 # Create feature branch
 git checkout -b feature/your-feature
