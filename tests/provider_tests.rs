@@ -1,8 +1,7 @@
-use datafusion::arrow::array::{Array, Int32Array, StringArray};
+use datafusion::arrow::array::{Int32Array, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::TableProvider;
-use datafusion::datasource::physical_plan::FileOpener;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::logical_expr::{Expr, col, lit};
@@ -269,26 +268,22 @@ async fn test_filtered_query() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     let results = df.collect().await?;
 
-    // With our stub index, we might not get results
-    // If we do get results, verify they match our filter
-    if !results.is_empty() {
-        for batch in &results {
-            let value_array = batch
-                .column_by_name("value")
-                .expect("value column should exist");
+    // Every returned row must satisfy the filter.
+    for batch in &results {
+        let value_array = batch
+            .column_by_name("value")
+            .expect("value column should exist");
 
-            for i in 0..batch.num_rows() {
-                let value = value_array
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .expect("should be string array")
-                    .value(i);
+        for i in 0..batch.num_rows() {
+            let value = value_array
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("should be string array")
+                .value(i);
 
-                assert_eq!(value, "apple");
-            }
+            assert_eq!(value, "apple");
         }
     }
-    // Test passes whether we got results or not
 
     Ok(())
 }
@@ -324,11 +319,11 @@ async fn test_empty_result_optimization() -> Result<(), Box<dyn std::error::Erro
     let df = ctx
         .sql("SELECT * FROM test_table WHERE value = 'nonexistent_value'")
         .await?;
-    let _results = df.collect().await?;
-
-    // With our stub index implementation, we'll likely get empty results
-    // but we don't need to assert it since the query itself is what we're testing
-    // Just check that the query executed without error
+    let results = df.collect().await?;
+    assert!(
+        results.iter().all(|b| b.num_rows() == 0),
+        "Expected no rows for a value absent from the index"
+    );
 
     Ok(())
 }
@@ -366,215 +361,39 @@ async fn test_multiple_filters() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     let results = df.collect().await?;
 
-    // With our stub index, we might not get results
-    // If we do get results, verify they match our filters
-    if !results.is_empty() {
-        for batch in &results {
-            let value_array = batch
-                .column_by_name("value")
-                .expect("value column should exist");
-            let id_array = batch.column_by_name("id").expect("id column should exist");
+    // Every returned row must satisfy both filters.
+    for batch in &results {
+        let value_array = batch
+            .column_by_name("value")
+            .expect("value column should exist");
+        let id_array = batch.column_by_name("id").expect("id column should exist");
 
-            for i in 0..batch.num_rows() {
-                let value = value_array
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .expect("should be string array")
-                    .value(i);
+        for i in 0..batch.num_rows() {
+            let value = value_array
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("should be string array")
+                .value(i);
 
-                let id = id_array
-                    .as_any()
-                    .downcast_ref::<Int32Array>()
-                    .expect("should be int32 array")
-                    .value(i);
+            let id = id_array
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .expect("should be int32 array")
+                .value(i);
 
-                assert_eq!(value, "apple");
-                assert!(id < 100);
-            }
-        }
-    }
-    // Test passes whether we got results or not - we're testing the query execution
-
-    Ok(())
-}
-
-// ─── PdqFileSource tests ─────────────────────────────────────────────────────
-
-/// Verify PdqFileSource::create_file_opener() returns a PdqParquetOpener.
-/// This is the central invariant of the wrapper.
-#[test]
-fn test_pdq_file_source_uses_pdq_opener() {
-    use datafusion::datasource::physical_plan::FileSource;
-    use datafusion::datasource::physical_plan::ParquetSource;
-    use object_store::local::LocalFileSystem;
-    use pdq::provider::PdqFileSource;
-
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-    ]));
-    let object_store: Arc<dyn object_store::ObjectStore> = Arc::new(LocalFileSystem::new());
-
-    let source = PdqFileSource::new(
-        ParquetSource::new(schema),
-        Arc::clone(&object_store),
-    );
-
-    // The key assertion: as_any() returns the PdqFileSource itself, not the inner ParquetSource
-    assert!(
-        source.as_any().downcast_ref::<PdqFileSource>().is_some(),
-        "as_any() should return PdqFileSource, not inner ParquetSource"
-    );
-
-    // Verify file_type delegates to parquet
-    assert_eq!(source.file_type(), "parquet");
-}
-
-// ─── PdqParquetOpener tests ──────────────────────────────────────────────────
-
-/// Helper: write an N-row-group Parquet file.
-/// Row group i has `rows_per_rg` rows, all with value = "rg{i}".
-async fn write_nrg_parquet(
-    path: &Path,
-    num_rg: usize,
-    rows_per_rg: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use datafusion::parquet::arrow::ArrowWriter;
-    use datafusion::parquet::file::properties::WriterProperties;
-
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new("value", DataType::Utf8, false),
-    ]));
-    let props = WriterProperties::builder()
-        .set_max_row_group_row_count(Some(rows_per_rg))
-        .build();
-    let mut writer = ArrowWriter::try_new(
-        File::create(path)?,
-        schema.clone(),
-        Some(props),
-    )?;
-
-    for rg_idx in 0..num_rg {
-        let start = (rg_idx * rows_per_rg) as i32;
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int32Array::from_iter_values(
-                    start..(start + rows_per_rg as i32),
-                )),
-                Arc::new(StringArray::from(vec![
-                    format!("rg{rg_idx}");
-                    rows_per_rg
-                ])),
-            ],
-        )?;
-        writer.write(&batch)?;
-        writer.flush()?; // force row group boundary
-    }
-    writer.close()?;
-    Ok(())
-}
-
-/// Helper: construct a PartitionedFile with Vec<usize> row group extensions.
-fn partitioned_file_with_row_groups(
-    path: &Path,
-    row_groups: Vec<usize>,
-) -> Result<datafusion::datasource::listing::PartitionedFile, Box<dyn std::error::Error>> {
-    let canonical = path.canonicalize()?;
-    let file_size = std::fs::metadata(&canonical)?.len();
-    let mut pf = datafusion::datasource::listing::PartitionedFile::new(
-        canonical.display().to_string(),
-        file_size,
-    );
-    pf.extensions = Some(Arc::new(row_groups));
-    Ok(pf)
-}
-
-/// Open a PdqParquetOpener against a 3-rg file with row_groups=[1].
-/// Assert only rows with value="rg1" appear in output.
-#[tokio::test]
-async fn test_opener_reads_correct_row_groups() -> Result<(), Box<dyn std::error::Error>> {
-    use futures::StreamExt;
-    use object_store::local::LocalFileSystem;
-    use pdq::provider::PdqParquetOpener;
-
-    let tmp = TempDir::new()?;
-    let file_path = tmp.path().join("test.parquet");
-    write_nrg_parquet(&file_path, 3, 10).await?;
-
-    let object_store: Arc<dyn object_store::ObjectStore> = Arc::new(LocalFileSystem::new());
-    let opener = PdqParquetOpener::new(
-        object_store,
-        None,    // projection: all columns
-        1024,    // batch_size
-    );
-
-    let pf = partitioned_file_with_row_groups(&file_path, vec![1])?;
-    let future = opener.open(pf)?;
-    let mut stream: futures::stream::BoxStream<'static, datafusion::common::Result<RecordBatch>> = future.await?;
-
-    let mut all_values: Vec<String> = vec![];
-    while let Some(batch_result) = stream.next().await {
-        let batch = batch_result?;
-        let string_arr = batch.column(1).as_any()
-            .downcast_ref::<StringArray>().unwrap();
-        for i in 0..string_arr.len() {
-            all_values.push(string_arr.value(i).to_string());
+            assert_eq!(value, "apple");
+            assert!(id < 100);
         }
     }
 
-    assert!(
-        all_values.iter().all(|v| v == "rg1"),
-        "Expected only rg1 values, got: {all_values:?}"
-    );
-    assert_eq!(all_values.len(), 10, "Expected 10 rows from row group 1");
-    Ok(())
-}
-
-/// Open with row_groups=[0, 99] on a 2-row-group file.
-/// Assert only row group 0 is scanned, no panic.
-#[tokio::test]
-async fn test_opener_skips_stale_index() -> Result<(), Box<dyn std::error::Error>> {
-    use futures::StreamExt;
-    use object_store::local::LocalFileSystem;
-    use pdq::provider::PdqParquetOpener;
-
-    let tmp = TempDir::new()?;
-    let file_path = tmp.path().join("two_rg.parquet");
-    write_nrg_parquet(&file_path, 2, 5).await?;
-
-    let object_store: Arc<dyn object_store::ObjectStore> = Arc::new(LocalFileSystem::new());
-    let opener = PdqParquetOpener::new(object_store, None, 1024);
-
-    let pf = partitioned_file_with_row_groups(&file_path, vec![0, 99])?;
-    let future = opener.open(pf)?;
-    let mut stream: futures::stream::BoxStream<'static, datafusion::common::Result<RecordBatch>> = future.await?;
-
-    let mut all_values: Vec<String> = vec![];
-    while let Some(batch_result) = stream.next().await {
-        let batch = batch_result?;
-        let string_arr = batch.column(1).as_any()
-            .downcast_ref::<StringArray>().unwrap();
-        for i in 0..string_arr.len() {
-            all_values.push(string_arr.value(i).to_string());
-        }
-    }
-
-    assert!(
-        all_values.iter().all(|v| v == "rg0"),
-        "Expected only rg0, got: {all_values:?}"
-    );
-    assert_eq!(all_values.len(), 5);
     Ok(())
 }
 
 /// Verify that querying for a nonexistent value returns zero rows.
-/// Pins the no-match → empty DataSourceExec path.
+/// Pins the no-match → empty DataSourceExec path. Uses count(*) so a projection
+/// is pushed down to the scan (guards against projection/schema mismatches).
 #[tokio::test]
 async fn test_scan_returns_empty_for_no_match() -> Result<(), Box<dyn std::error::Error>> {
-    use datafusion::execution::context::SessionContext;
-    use pdq::index::Indexer;
-
     let tmp = TempDir::new()?;
     let data_dir = tmp.path().join("data");
     let index_dir = tmp.path().join("index");
@@ -582,9 +401,7 @@ async fn test_scan_returns_empty_for_no_match() -> Result<(), Box<dyn std::error
     std::fs::create_dir_all(&index_dir)?;
 
     create_test_parquet_files(&data_dir, 1, 10, 10, &["alpha"]).await?;
-
-    let indexer = Indexer::new(index_dir.to_str().unwrap());
-    indexer.build_index(&data_dir, "value")?;
+    create_test_index(&index_dir, &data_dir, "value")?;
 
     let provider = PdqTableProviderBuilder::new()
         .with_index_dir(&index_dir)
@@ -595,38 +412,102 @@ async fn test_scan_returns_empty_for_no_match() -> Result<(), Box<dyn std::error
     let ctx = SessionContext::new();
     ctx.register_table("t", Arc::new(provider))?;
 
-    let df = ctx.sql("SELECT count(*) as n FROM t WHERE value = 'nonexistent'").await?;
+    let df = ctx
+        .sql("SELECT count(*) as n FROM t WHERE value = 'nonexistent'")
+        .await?;
     let results = df.collect().await?;
-    let count_arr = results[0].column(0).as_any()
-        .downcast_ref::<datafusion::arrow::array::Int64Array>().unwrap();
-    assert_eq!(count_arr.value(0), 0, "Expected zero rows for nonexistent value");
+    let count_arr = results[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<datafusion::arrow::array::Int64Array>()
+        .unwrap();
+    assert_eq!(
+        count_arr.value(0),
+        0,
+        "Expected zero rows for nonexistent value"
+    );
     Ok(())
 }
 
-/// Open with row_groups=[99] only on a 2-row-group file.
-/// Assert zero batches produced (no panic, no error).
+/// Row-group pruning correctness: a value that lives in a single row group must
+/// return exactly that row group's rows. A count(*) query forces a projection
+/// down to the scan, exercising the ParquetAccessPlan + projection path.
 #[tokio::test]
-async fn test_opener_empty_result_on_all_stale() -> Result<(), Box<dyn std::error::Error>> {
-    use futures::StreamExt;
-    use object_store::local::LocalFileSystem;
-    use pdq::provider::PdqParquetOpener;
-
+async fn test_row_group_pruning_isolates_value() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = TempDir::new()?;
-    let file_path = tmp.path().join("two_rg.parquet");
-    write_nrg_parquet(&file_path, 2, 5).await?;
+    let data_dir = tmp.path().join("data");
+    let index_dir = tmp.path().join("index");
+    std::fs::create_dir_all(&data_dir)?;
+    std::fs::create_dir_all(&index_dir)?;
 
-    let object_store: Arc<dyn object_store::ObjectStore> = Arc::new(LocalFileSystem::new());
-    let opener = PdqParquetOpener::new(object_store, None, 1024);
-
-    let pf = partitioned_file_with_row_groups(&file_path, vec![99])?;
-    let future = opener.open(pf)?;
-    let mut stream: futures::stream::BoxStream<'static, datafusion::common::Result<RecordBatch>> = future.await?;
-
-    let mut batch_count = 0;
-    while let Some(batch_result) = stream.next().await {
-        batch_result?;
-        batch_count += 1;
+    // 3 row groups of 10 rows. "needle" lives only in row group 1.
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("value", DataType::Utf8, false),
+    ]));
+    let file_path = data_dir.join("isolated.parquet");
+    let props = WriterProperties::builder()
+        .set_max_row_group_row_count(Some(10))
+        .build();
+    let mut writer = datafusion::parquet::arrow::ArrowWriter::try_new(
+        File::create(&file_path)?,
+        schema.clone(),
+        Some(props),
+    )?;
+    for rg in 0..3usize {
+        let label = if rg == 1 { "needle" } else { "haystack" };
+        let start = (rg * 10) as i32;
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(start..(start + 10))),
+                Arc::new(StringArray::from(vec![label; 10])),
+            ],
+        )?;
+        writer.write(&batch)?;
+        writer.flush()?;
     }
-    assert_eq!(batch_count, 0, "Expected zero batches when all indices are stale");
+    writer.close()?;
+
+    create_test_index(&index_dir, &data_dir, "value")?;
+
+    let provider = PdqTableProviderBuilder::new()
+        .with_index_dir(&index_dir)
+        .with_data_dir(&data_dir)
+        .build()
+        .await?;
+    let ctx = SessionContext::new();
+    ctx.register_table("t", Arc::new(provider))?;
+
+    // count(*) pushes a projection to the scan.
+    let df = ctx
+        .sql("SELECT count(*) as n FROM t WHERE value = 'needle'")
+        .await?;
+    let results = df.collect().await?;
+    let count = results[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<datafusion::arrow::array::Int64Array>()
+        .unwrap()
+        .value(0);
+    assert_eq!(count, 10, "needle occupies exactly one 10-row row group");
+
+    // SELECT * must return only needle rows.
+    let df = ctx.sql("SELECT * FROM t WHERE value = 'needle'").await?;
+    let results = df.collect().await?;
+    let mut total = 0;
+    for batch in &results {
+        let value_array = batch
+            .column_by_name("value")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for i in 0..batch.num_rows() {
+            assert_eq!(value_array.value(i), "needle");
+            total += 1;
+        }
+    }
+    assert_eq!(total, 10);
     Ok(())
 }

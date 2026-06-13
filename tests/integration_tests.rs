@@ -93,6 +93,79 @@ async fn test_complete_pdq_pipeline() -> Result<()> {
     Ok(())
 }
 
+/// Smoke test: index over 4 Parquet files, each with 3 row groups, and query
+/// matching row groups across all of them. Verifies DataFusion drives all
+/// partitions and merges results: 4 files × 3 row groups × 10 rows = 120.
+#[tokio::test]
+async fn test_multifile_parallel_scan() -> Result<()> {
+    let test_dir = TempDir::new()?;
+    let data_dir = test_dir.path().join("data");
+    let index_dir = test_dir.path().join("index");
+
+    fs::create_dir_all(&data_dir)?;
+    fs::create_dir_all(&index_dir)?;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("value", DataType::Utf8, false),
+    ]));
+
+    for file_idx in 0..4usize {
+        let file_path = data_dir.join(format!("file_{file_idx}.parquet"));
+        let props = WriterProperties::builder()
+            .set_max_row_group_row_count(Some(10))
+            .build();
+        let mut writer = datafusion::parquet::arrow::ArrowWriter::try_new(
+            File::create(&file_path)?,
+            schema.clone(),
+            Some(props),
+        )?;
+        for rg in 0..3usize {
+            let start = (file_idx * 30 + rg * 10) as i32;
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from_iter_values(start..(start + 10))),
+                    Arc::new(StringArray::from(vec!["target"; 10])),
+                ],
+            )?;
+            writer.write(&batch)?;
+            writer.flush()?;
+        }
+        writer.close()?;
+    }
+
+    let indexer = Indexer::new(index_dir.to_str().unwrap());
+    indexer.build_index(&data_dir, "value")?;
+
+    let provider = PdqTableProviderBuilder::new()
+        .with_index_dir(&index_dir)
+        .with_data_dir(&data_dir)
+        .build()
+        .await?;
+
+    let ctx = SessionContext::new();
+    ctx.register_table("t", Arc::new(provider))?;
+
+    let df = ctx
+        .sql("SELECT count(*) as n FROM t WHERE value = 'target'")
+        .await?;
+    let results = df.collect().await?;
+
+    let count_arr = results[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<datafusion::arrow::array::Int64Array>()
+        .unwrap();
+    assert_eq!(
+        count_arr.value(0),
+        120,
+        "Expected 4 files × 3 row groups × 10 rows = 120 total rows"
+    );
+
+    Ok(())
+}
+
 /// Creates test Parquet files with predictable data for testing.
 async fn create_test_parquet_files(dir: &Path, values: &[&str]) -> Result<Vec<PathBuf>> {
     // Define schema: id (int32) and value (string)

@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -6,30 +5,19 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
-use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::Session;
 use datafusion::common::{DFSchema, DataFusionError, Result as DataFusionResult};
 use datafusion::datasource::TableProvider;
 use datafusion::datasource::listing::PartitionedFile;
+use datafusion::datasource::physical_plan::parquet::ParquetAccessPlan;
+use datafusion::datasource::physical_plan::{FileScanConfigBuilder, ParquetSource};
 use datafusion::datasource::source::DataSourceExec;
-use datafusion::datasource::physical_plan::{
-    FileScanConfigBuilder, FileSource, ParquetSource,
-};
-use datafusion::datasource::physical_plan::{FileOpenFuture, FileOpener, FileScanConfig};
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use datafusion::parquet::arrow::async_reader::{ParquetObjectReader, ParquetRecordBatchStreamBuilder};
-use datafusion::parquet::arrow::ProjectionMask;
 use datafusion::physical_plan::ExecutionPlan;
-use futures::StreamExt;
-use futures::stream::BoxStream;
-use object_store::ObjectStore;
 use rayon::prelude::*;
-
-// Parquet execution imports
-use datafusion::datasource::physical_plan::parquet::ParquetAccessPlan;
 
 use crate::calculate_file_hash;
 use crate::query::IndexQueryEngine;
@@ -37,13 +25,15 @@ use crate::query::IndexQueryEngine;
 type PrunedRowGroups = HashMap<String, Vec<usize>>;
 type HashToPath = HashMap<String, PathBuf>;
 
-/// Enhanced PDQ TableProvider with DataFusion v49 improvements
+/// PDQ TableProvider.
 ///
-/// This implementation provides:
-/// 1. Modern FileScanConfigBuilder usage with ParquetSource
-/// 2. PruningStatistics implementation leveraging FST indices
-/// 3. Optimized metadata handling via `ParquetFileReaderFactory`
-/// 4. Parallel schema inference
+/// Resolves equality filters against FST indexes to prune to specific Parquet
+/// row groups, then hands DataFusion a standard [`ParquetSource`] scan with a
+/// [`ParquetAccessPlan`] attached per file via [`PartitionedFile`] extensions.
+/// DataFusion's own Parquet opener honors that access plan, so projection,
+/// predicate pruning, and page-index pruning all work as usual. The row group
+/// count needed to build the access plan is read from the FST index metadata,
+/// so planning performs no Parquet footer I/O.
 #[derive(Debug)]
 pub struct PdqTableProvider {
     /// FST-based index query engine
@@ -199,14 +189,24 @@ impl PdqTableProvider {
         None
     }
 
+    /// Total row group count for a matched file, preferring the value recorded
+    /// in the FST index (zero I/O). Falls back to a single footer read for
+    /// legacy indexes that predate row-group-count recording.
+    fn row_group_count(&self, file_hash: &str, file_path: &Path) -> DataFusionResult<usize> {
+        if let Some(count) = self.index_engine.num_row_groups(file_hash) {
+            return Ok(count);
+        }
+        let file = std::fs::File::open(file_path)
+            .map_err(|e| DataFusionError::Plan(format!("Failed to open {file_path:?}: {e}")))?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
+            DataFusionError::Plan(format!("Failed to read footer {file_path:?}: {e}"))
+        })?;
+        Ok(builder.metadata().num_row_groups())
+    }
 }
 
 #[async_trait]
 impl TableProvider for PdqTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -215,7 +215,8 @@ impl TableProvider for PdqTableProvider {
         TableType::Base
     }
 
-    /// Enhanced scan implementation using modern DataFusion APIs and FST pruning
+    /// Scan implementation: FST-pruned row groups handed to a stock ParquetSource
+    /// via a per-file ParquetAccessPlan stored in PartitionedFile extensions.
     async fn scan(
         &self,
         state: &dyn Session,
@@ -223,29 +224,16 @@ impl TableProvider for PdqTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        // FST lookups only — zero disk I/O at planning time
+        // FST lookups only — zero Parquet I/O at planning time.
         let (file_row_groups, hash_to_path) = self
             .prune_with_fst_index(filters)
             .map_err(|e| DataFusionError::Plan(format!("FST pruning failed: {e}")))?;
 
-        // Note: PDQ only returns results for equality filters on indexed columns.
-        // If filters is empty or contains no equality filters, prune_with_fst_index()
-        // returns an empty map and this method returns an empty DataSourceExec.
-        // Full-table scans without equality filters are not supported — callers
-        // should always provide equality predicates on indexed columns.
-
         let object_store_url = ObjectStoreUrl::parse("file://")?;
-        let object_store = state
-            .runtime_env()
-            .object_store(object_store_url.clone())
-            .map_err(|e| DataFusionError::Plan(format!("Failed to get object store: {e}")))?;
 
-        // No matches → empty plan immediately, no I/O
+        // No matches → empty plan immediately, no I/O.
         if file_row_groups.is_empty() {
-            let source = Arc::new(PdqFileSource::new(
-                ParquetSource::new(self.schema.clone()),
-                object_store,
-            ));
+            let source = Arc::new(ParquetSource::new(self.schema.clone()));
             let config = FileScanConfigBuilder::new(object_store_url, source)
                 .with_projection_indices(projection.cloned())?
                 .with_limit(limit)
@@ -253,49 +241,54 @@ impl TableProvider for PdqTableProvider {
             return Ok(DataSourceExec::from_data_source(config));
         }
 
-        // Build predicate for downstream FilterExec
+        // Build a physical predicate so the stock ParquetSource can perform its own
+        // statistics/page pruning on top of our row-group selection, and so its
+        // expression adapter can rebase columns when a projection is pushed down.
         let df_schema = DFSchema::try_from(self.schema.clone())?;
-        let predicate = conjunction(filters.to_vec());
-        let predicate = predicate
+        let predicate = conjunction(filters.to_vec())
             .map(|p| state.create_physical_expr(p, &df_schema))
             .transpose()?
             .unwrap_or_else(|| datafusion::physical_expr::expressions::lit(true));
 
-        let source = Arc::new(PdqFileSource::new(
-            ParquetSource::new(self.schema.clone()).with_predicate(predicate),
-            Arc::clone(&object_store),
-        ));
+        let source = Arc::new(ParquetSource::new(self.schema.clone()).with_predicate(predicate));
+        let mut builder = FileScanConfigBuilder::new(object_store_url, source)
+            .with_projection_indices(projection.cloned())?
+            .with_limit(limit);
 
-        let mut file_scan_config_builder =
-            FileScanConfigBuilder::new(object_store_url, source)
-                .with_projection_indices(projection.cloned())?
-                .with_limit(limit);
-
-        // Store Vec<usize> of matched row group indices in extensions.
-        // PdqParquetOpener reads the footer and uses these indices at execution time.
+        // For each matched file, build a ParquetAccessPlan that scans only the
+        // matched row groups and attach it to the PartitionedFile. DataFusion's
+        // Parquet opener reads the footer at execution time and honors the plan.
         for (file_hash, row_groups) in &file_row_groups {
-            // Skip files where filter intersection eliminated all row groups.
-            // This can happen when multiple equality filters on the same column
-            // produce non-overlapping row group sets.
             if row_groups.is_empty() {
                 continue;
             }
+            let Some(file_path) = hash_to_path.get(file_hash) else {
+                continue;
+            };
 
-            if let Some(file_path) = hash_to_path.get(file_hash) {
-                let canonical_path = std::fs::canonicalize(file_path).map_err(|e| {
-                    DataFusionError::Plan(format!("Path canonicalization failed: {e}"))
-                })?;
-                let file_size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
-
-                let mut partitioned_file =
-                    PartitionedFile::new(canonical_path.display().to_string(), file_size);
-                partitioned_file.extensions = Some(Arc::new(row_groups.clone()));
-
-                file_scan_config_builder = file_scan_config_builder.with_file(partitioned_file);
+            let total_rgs = self.row_group_count(file_hash, file_path)?;
+            let mut access_plan = ParquetAccessPlan::new_none(total_rgs);
+            for &rg in row_groups {
+                if rg < total_rgs {
+                    access_plan.scan(rg);
+                }
             }
+            // All matched row groups were stale relative to the current file — skip it.
+            if access_plan.row_group_indexes().is_empty() {
+                continue;
+            }
+
+            let canonical_path = std::fs::canonicalize(file_path)
+                .map_err(|e| DataFusionError::Plan(format!("Path canonicalization failed: {e}")))?;
+            let file_size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
+
+            let partitioned_file =
+                PartitionedFile::new(canonical_path.display().to_string(), file_size)
+                    .with_extension(access_plan);
+            builder = builder.with_file(partitioned_file);
         }
 
-        Ok(DataSourceExec::from_data_source(file_scan_config_builder.build()))
+        Ok(DataSourceExec::from_data_source(builder.build()))
     }
 
     /// Enhanced filter pushdown support with FST-aware categorization
@@ -371,187 +364,6 @@ impl Default for PdqTableProviderBuilder {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Custom FileOpener that reads Parquet footer at execution time.
-///
-/// Receives `Vec<usize>` (matched row group indices) from `PartitionedFile::extensions`
-/// set by `scan()`. Opens the file, reads the footer, builds a row group selection,
-/// and returns the record batch stream.
-pub struct PdqParquetOpener {
-    object_store: Arc<dyn ObjectStore>,
-    projection: Option<Vec<usize>>,
-    batch_size: usize,
-}
-
-impl PdqParquetOpener {
-    pub fn new(
-        object_store: Arc<dyn ObjectStore>,
-        projection: Option<Vec<usize>>,
-        batch_size: usize,
-    ) -> Self {
-        Self { object_store, projection, batch_size }
-    }
-}
-
-impl FileOpener for PdqParquetOpener {
-    fn open(
-        &self,
-        partitioned_file: PartitionedFile,
-    ) -> datafusion::common::Result<FileOpenFuture> {
-        let object_store = Arc::clone(&self.object_store);
-        let projection = self.projection.clone();
-        let batch_size = self.batch_size;
-
-        // Extract Vec<usize> from extensions — matched row group indices from scan()
-        let row_groups: Vec<usize> = partitioned_file
-            .extensions
-            .as_ref()
-            .and_then(|ext| ext.downcast_ref::<Vec<usize>>())
-            .cloned()
-            .unwrap_or_default();
-
-        let location = partitioned_file.object_meta.location.clone();
-        let file_size = partitioned_file.object_meta.size;
-
-        Ok(Box::pin(async move {
-            // Footer read happens HERE, at execution time (not planning time)
-            let reader = ParquetObjectReader::new(object_store, location)
-                .with_file_size(file_size);
-            let builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
-
-            let total_rgs = builder.metadata().num_row_groups();
-
-            // Build access plan: start with none, enable only matched row groups
-            let mut access_plan = ParquetAccessPlan::new_none(total_rgs);
-            for &idx in &row_groups {
-                if idx < total_rgs {
-                    access_plan.scan(idx);
-                }
-            }
-
-            let valid_rg_indexes = access_plan.row_group_indexes();
-
-            if valid_rg_indexes.is_empty() {
-                // All indices were stale — return empty stream
-                let empty: BoxStream<'static, datafusion::common::Result<RecordBatch>> =
-                    Box::pin(futures::stream::empty());
-                return Ok(empty);
-            }
-
-            let mut builder = builder
-                .with_row_groups(valid_rg_indexes)
-                .with_batch_size(batch_size);
-
-            if let Some(proj) = projection {
-                let parquet_schema = builder.parquet_schema().clone();
-                let mask = ProjectionMask::roots(&parquet_schema, proj);
-                builder = builder.with_projection(mask);
-            }
-
-            let stream = builder.build()?;
-            let mapped: BoxStream<'static, datafusion::common::Result<RecordBatch>> =
-                Box::pin(stream.map(|r| r.map_err(DataFusionError::from)));
-            Ok(mapped)
-        }))
-    }
-}
-
-/// FileSource that wraps ParquetSource but uses PdqParquetOpener for file opens.
-///
-/// Delegates all FileSource methods to the inner ParquetSource, except
-/// create_file_opener() which returns a PdqParquetOpener. This moves
-/// Parquet footer I/O from scan() (planning) to open() (execution).
-pub struct PdqFileSource {
-    inner: Arc<dyn FileSource>,
-    object_store: Arc<dyn ObjectStore>,
-}
-
-impl Clone for PdqFileSource {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-            object_store: Arc::clone(&self.object_store),
-        }
-    }
-}
-
-impl std::fmt::Debug for PdqFileSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PdqFileSource")
-            .field("file_type", &self.inner.file_type())
-            .finish()
-    }
-}
-
-impl PdqFileSource {
-    pub fn new(inner: ParquetSource, object_store: Arc<dyn ObjectStore>) -> Self {
-        Self {
-            inner: Arc::new(inner),
-            object_store,
-        }
-    }
-}
-
-impl FileSource for PdqFileSource {
-    fn create_file_opener(
-        &self,
-        _object_store: Arc<dyn ObjectStore>,
-        base_config: &FileScanConfig,
-        _partition: usize,
-    ) -> datafusion::common::Result<Arc<dyn FileOpener>> {
-        const DEFAULT_BATCH_SIZE: usize = 8192; // DataFusion default
-        let batch_size = base_config.batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
-        Ok(Arc::new(PdqParquetOpener::new(
-            Arc::clone(&self.object_store),
-            None, // projection — let DataFusion handle at a higher level
-            batch_size,
-        )))
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn table_schema(&self) -> &datafusion::datasource::table_schema::TableSchema {
-        self.inner.table_schema()
-    }
-
-    fn with_batch_size(&self, batch_size: usize) -> Arc<dyn FileSource> {
-        let new_inner = self.inner.with_batch_size(batch_size);
-        Arc::new(PdqFileSource {
-            inner: new_inner,
-            object_store: Arc::clone(&self.object_store),
-        })
-    }
-
-    fn metrics(&self) -> &datafusion::physical_plan::metrics::ExecutionPlanMetricsSet {
-        self.inner.metrics()
-    }
-
-    fn file_type(&self) -> &str {
-        self.inner.file_type()
-    }
-
-    /// Forward projection pushdown to the inner ParquetSource, then re-wrap in PdqFileSource.
-    /// This is required for FileScanConfigBuilder::with_projection_indices() to succeed.
-    fn try_pushdown_projection(
-        &self,
-        projection: &datafusion::physical_expr::projection::ProjectionExprs,
-    ) -> datafusion::common::Result<Option<Arc<dyn FileSource>>> {
-        match self.inner.try_pushdown_projection(projection)? {
-            Some(new_inner) => Ok(Some(Arc::new(PdqFileSource {
-                inner: new_inner,
-                object_store: Arc::clone(&self.object_store),
-            }))),
-            None => Ok(None),
-        }
-    }
-
-    // INTENTIONAL: try_pushdown_filters() is NOT forwarded.
-    // PDQ performs its own row-group pruning via FST index (Vec<usize> in PartitionedFile::extensions).
-    // Row-level filtering is handled by DataFusion's FilterExec downstream (TableProviderFilterPushDown::Inexact).
-    // Page-level Parquet pruning (bloom filters, page index) is intentionally traded away.
 }
 
 #[cfg(test)]

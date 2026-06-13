@@ -259,8 +259,16 @@ impl Indexer {
             .as_secs();
         let size = file_metadata.len();
 
+        // Line 4 records the total row group count so queries can build a
+        // ParquetAccessPlan without re-reading the Parquet footer at planning time.
         let metadata_path = index_dir.join("metadata.txt");
-        let metadata_content = format!("{}\n{}\n{}\n", file_path.to_string_lossy(), mtime, size);
+        let metadata_content = format!(
+            "{}\n{}\n{}\n{}\n",
+            file_path.to_string_lossy(),
+            mtime,
+            size,
+            reader.num_row_groups()
+        );
         std::fs::write(&metadata_path, metadata_content.as_bytes())?;
 
         let index_path = index_dir.join(format!("{column}.fst"));

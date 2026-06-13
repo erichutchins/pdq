@@ -31,14 +31,14 @@ pyo3-async-runtimes-macros = { version = "0.28" }
 datafusion = { default-features = false, features = [
     "parquet",
     "sql"
-], version = "53.0.0" }
-datafusion-common = "53.0.0"
-datafusion-physical-expr = "53.0.0"
-datafusion-expr = "53.0.0"
+], version = "54.0.0" }
+datafusion-common = "54.0.0"
+datafusion-physical-expr = "54.0.0"
+datafusion-expr = "54.0.0"
 walkdir = "2.5"
 memmap2 = "0.9"
 futures = "0.3"
-object_store = "0.13.1"
+object_store = "0.13.2"
 bytes = "1.10"
 anyhow = "1.0"
 

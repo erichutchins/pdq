@@ -24,22 +24,33 @@ pub struct IndexQueryEngine {
     index_dir: PathBuf,
     /// Maps file hash to actual file path for result resolution
     file_map: Arc<HashMap<String, PathBuf>>,
+    /// Maps file hash to the total number of row groups in the Parquet file.
+    /// Recorded at index time (metadata.txt line 4) so queries can build a
+    /// ParquetAccessPlan without re-reading the Parquet footer.
+    row_group_counts: Arc<HashMap<String, usize>>,
 }
 
 impl IndexQueryEngine {
     pub fn new<P: AsRef<Path>>(index_dir: P) -> Self {
         let index_dir = index_dir.as_ref().to_path_buf();
-        let file_map = Self::build_file_map(&index_dir);
+        let (file_map, row_group_counts) = Self::build_file_map(&index_dir);
 
         Self {
             index_dir,
             file_map: Arc::new(file_map),
+            row_group_counts: Arc::new(row_group_counts),
         }
     }
 
-    /// Build a mapping from file hash to actual file path by reading index directory
-    fn build_file_map(index_dir: &Path) -> HashMap<String, PathBuf> {
+    /// Total row group count recorded for a file hash at index time, if known.
+    pub fn num_row_groups(&self, file_hash: &str) -> Option<usize> {
+        self.row_group_counts.get(file_hash).copied()
+    }
+
+    /// Build file-hash → path and file-hash → row-group-count maps from the index directory.
+    fn build_file_map(index_dir: &Path) -> (HashMap<String, PathBuf>, HashMap<String, usize>) {
         let mut map = HashMap::new();
+        let mut counts = HashMap::new();
 
         // Read the index directory structure
         if let Ok(entries) = std::fs::read_dir(index_dir) {
@@ -49,11 +60,17 @@ impl IndexQueryEngine {
 
                     // Check if there's a metadata file that stores the original path
                     let metadata_path = entry.path().join("metadata.txt");
-                    if let Ok(contents) = std::fs::read_to_string(&metadata_path)
-                        && let Some(original_path) = contents.lines().next()
-                    {
-                        map.insert(file_hash, PathBuf::from(original_path));
-                        continue;
+                    if let Ok(contents) = std::fs::read_to_string(&metadata_path) {
+                        let mut lines = contents.lines();
+                        if let Some(original_path) = lines.next() {
+                            map.insert(file_hash.clone(), PathBuf::from(original_path));
+                            // Line 4 (index 3) holds the row group count, when present.
+                            if let Some(count) = lines.nth(2).and_then(|l| l.parse::<usize>().ok())
+                            {
+                                counts.insert(file_hash, count);
+                            }
+                            continue;
+                        }
                     }
 
                     // Fallback: use hash as identifier (for backward compatibility)
@@ -65,7 +82,7 @@ impl IndexQueryEngine {
             }
         }
 
-        map
+        (map, counts)
     }
 
     /// Perform an exact match search across all FST indexes for a column
