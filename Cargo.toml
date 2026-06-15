@@ -15,7 +15,7 @@ name = "pdq"
 path = "src/bin/pdq.rs"
 
 [dependencies]
-arrow-pyarrow = "58.0.0"
+arrow-pyarrow = "58.3.0"
 async-trait = "0.1"
 clap = { version = "4.0", features = ["derive"] }
 fst = "0.4.7"
