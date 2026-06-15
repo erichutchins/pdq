@@ -5,6 +5,9 @@ pub mod query;
 #[cfg(feature = "shootout")]
 pub mod corpus_gen;
 
+#[cfg(feature = "shootout")]
+pub mod bloom_probe;
+
 // #[cfg(feature = "pyo3")]
 mod py_module;
 
