@@ -43,6 +43,18 @@ bytes = "1.10"
 anyhow = "1.0"
 
 
+[features]
+# Benchmark-only code (bloom-filter probing, counting reader). Keeps this
+# code out of normal library builds and shipped wheels.
+shootout = []
+
+[[bench]]
+name = "pruning_cost"
+harness = false
+# Only build this bench when the feature is on, so plain `cargo test` / CI
+# (which compile bench targets) don't fail on the feature-gated bloom_probe.
+required-features = ["shootout"]
+
 [dev-dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
