@@ -33,3 +33,7 @@ bench_results*.md
 
 # Local reference checkout of external repos (e.g. a datafusion clone)
 /reference/
+
+# Shootout generated artifacts
+misc/shootout/corpora/
+misc/shootout/results/
