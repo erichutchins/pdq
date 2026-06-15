@@ -14,7 +14,7 @@ use std::time::Instant;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let matches = Command::new("pdq")
+    let command = Command::new("pdq")
         .version(env!("CARGO_PKG_VERSION"))
         .about("FST-based Parquet indexing and querying tool")
         .subcommand(
@@ -125,8 +125,50 @@ async fn main() -> Result<()> {
                         .help("Write output to file instead of stdout")
                         .required(false),
                 ),
-        )
-        .get_matches();
+        );
+
+    #[cfg(feature = "shootout")]
+    let command = command.subcommand(
+        Command::new("gen-corpus")
+            .about("Benchmark-only: write a bloom-filter Parquet corpus with planted needles")
+            .arg(
+                Arg::new("out")
+                    .long("out")
+                    .value_name("DIR")
+                    .help("Output data directory")
+                    .required(true),
+            )
+            .arg(
+                Arg::new("files")
+                    .long("files")
+                    .value_name("N")
+                    .help("Number of Parquet files")
+                    .required(true),
+            )
+            .arg(
+                Arg::new("row-groups")
+                    .long("row-groups")
+                    .value_name("N")
+                    .help("Row groups per file")
+                    .required(true),
+            )
+            .arg(
+                Arg::new("rows-per-group")
+                    .long("rows-per-group")
+                    .value_name("N")
+                    .help("Rows per row group")
+                    .required(true),
+            )
+            .arg(
+                Arg::new("seed")
+                    .long("seed")
+                    .value_name("N")
+                    .help("RNG seed")
+                    .default_value("42"),
+            ),
+    );
+
+    let matches = command.get_matches();
 
     match matches.subcommand() {
         Some(("index", sub_matches)) => {
@@ -294,6 +336,29 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+        }
+        #[cfg(feature = "shootout")]
+        Some(("gen-corpus", sub_matches)) => {
+            let out = sub_matches.get_one::<String>("out").unwrap();
+            let files: usize = sub_matches.get_one::<String>("files").unwrap().parse()?;
+            let row_groups: usize = sub_matches
+                .get_one::<String>("row-groups")
+                .unwrap()
+                .parse()?;
+            let rows_per_group: usize = sub_matches
+                .get_one::<String>("rows-per-group")
+                .unwrap()
+                .parse()?;
+            let seed: u64 = sub_matches.get_one::<String>("seed").unwrap().parse()?;
+
+            pdq::corpus_gen::write_corpus(
+                Path::new(out),
+                files,
+                row_groups,
+                rows_per_group,
+                seed,
+            )?;
+            println!("Wrote corpus: {files} files -> {out}");
         }
         _ => {
             eprintln!("No subcommand provided. Use --help for usage information.");
