@@ -2,6 +2,9 @@ pub mod index;
 pub mod provider;
 pub mod query;
 
+#[cfg(feature = "shootout")]
+pub mod corpus_gen;
+
 // #[cfg(feature = "pyo3")]
 mod py_module;
 
