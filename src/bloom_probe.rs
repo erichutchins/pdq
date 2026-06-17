@@ -59,11 +59,7 @@ impl ChunkReader for CountingReader {
         })
     }
 
-    fn get_bytes(
-        &self,
-        start: u64,
-        length: usize,
-    ) -> datafusion::parquet::errors::Result<Bytes> {
+    fn get_bytes(&self, start: u64, length: usize) -> datafusion::parquet::errors::Result<Bytes> {
         self.bytes.fetch_add(length as u64, Ordering::Relaxed);
         self.inner.get_bytes(start, length)
     }
@@ -94,10 +90,10 @@ pub fn probe_bloom(path: &Path, column: &str, value: &str) -> Result<(Vec<usize>
     let mut matched = Vec::new();
     for rg in 0..meta.num_row_groups() {
         let rg_reader = file_reader.get_row_group(rg)?;
-        if let Some(sbbf) = rg_reader.get_column_bloom_filter(col_idx) {
-            if sbbf.check(&value) {
-                matched.push(rg);
-            }
+        if let Some(sbbf) = rg_reader.get_column_bloom_filter(col_idx)
+            && sbbf.check(&value)
+        {
+            matched.push(rg);
         }
     }
     Ok((matched, counter.load(Ordering::Relaxed)))
@@ -142,7 +138,10 @@ mod tests {
         let file = data.join("part_00000.parquet");
         // A value never planted and astronomically unlikely as random filler.
         let (rgs, _) = probe_bloom(&file, "src_ip", "203.0.113.255zzz").unwrap();
-        assert!(rgs.is_empty(), "absent value should not match any row group");
+        assert!(
+            rgs.is_empty(),
+            "absent value should not match any row group"
+        );
     }
 
     #[test]

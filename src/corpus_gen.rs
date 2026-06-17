@@ -154,7 +154,10 @@ pub fn write_corpus(
         let mut writer =
             ArrowWriter::try_new(file, schema.clone(), Some(writer_props(rows_per_group)))?;
         // Per-file RNG seed so files are independent but reproducible.
-        let mut rng = Rng::new(seed.wrapping_add(fi as u64).wrapping_mul(0x9E3779B97F4A7C15));
+        let mut rng = Rng::new(
+            seed.wrapping_add(fi as u64)
+                .wrapping_mul(0x9E3779B97F4A7C15),
+        );
 
         for rgi in 0..row_groups_per_file {
             let multi_ioc;
