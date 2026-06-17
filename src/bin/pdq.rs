@@ -351,13 +351,7 @@ async fn main() -> Result<()> {
                 .parse()?;
             let seed: u64 = sub_matches.get_one::<String>("seed").unwrap().parse()?;
 
-            pdq::corpus_gen::write_corpus(
-                Path::new(out),
-                files,
-                row_groups,
-                rows_per_group,
-                seed,
-            )?;
+            pdq::corpus_gen::write_corpus(Path::new(out), files, row_groups, rows_per_group, seed)?;
             println!("Wrote corpus: {files} files -> {out}");
         }
         _ => {
