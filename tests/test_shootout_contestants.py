@@ -26,3 +26,15 @@ def test_all_contestants_match_oracle(tmp_path):
     rows, secs = run_pdq_cli(m.index_dir, m.corpus_dir, col, val,
                              pdq_bin="target/release/pdq")
     assert rows == truth
+
+
+from run_e2e import datafusion_bloom_pruned_count  # noqa: E402
+
+
+def test_datafusion_bloom_actually_prunes(tmp_path):
+    m = generate_corpus_and_index(tmp_path, n_files=4, row_groups_per_file=2,
+                                  rows_per_group=500, seed=8,
+                                  pdq_bin="target/release/pdq")
+    pruned = datafusion_bloom_pruned_count(
+        m.corpus_dir, m.single.column, m.single.value)
+    assert pruned > 0, "bloom pruning did not fire — benchmark would be invalid"
