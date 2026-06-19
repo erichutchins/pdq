@@ -1,22 +1,36 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::catalog::Session;
 use datafusion::common::{DFSchema, DataFusionError, Result as DataFusionResult};
 use datafusion::datasource::TableProvider;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::ParquetAccessPlan;
-use datafusion::datasource::physical_plan::{FileScanConfigBuilder, ParquetSource};
+use datafusion::datasource::physical_plan::{
+    FileScanConfigBuilder, ParquetFileReaderFactory, ParquetSource,
+};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
-use datafusion::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use datafusion::parquet::arrow::arrow_reader::{
+    ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
+};
+use datafusion::parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader};
+use datafusion::parquet::errors::Result as ParquetResult;
+use datafusion::parquet::file::metadata::ParquetMetaData;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use futures::future::{BoxFuture, FutureExt};
+use object_store::ObjectStore;
 use rayon::prelude::*;
 
 use crate::calculate_file_hash;
@@ -24,6 +38,143 @@ use crate::query::IndexQueryEngine;
 
 type PrunedRowGroups = HashMap<String, Vec<usize>>;
 type HashToPath = HashMap<String, PathBuf>;
+
+/// Default footer size hint (bytes) read from the tail of a Parquet file on the
+/// first (cold) metadata fetch, so the footer + Thrift metadata come back in one
+/// read instead of two. Over-hinting only over-reads once per file (then the
+/// result is cached); under-hinting costs a second read. 512 KiB comfortably
+/// covers the footer of the multi-row-group, multi-column files PDQ targets.
+const DEFAULT_METADATA_SIZE_HINT: usize = 512 * 1024;
+
+/// Process-lifetime cache of parsed Parquet metadata, shared across queries.
+///
+/// PDQ's planning path is already zero-footer-I/O (row-group counts come from the
+/// FST index), but *execution* still has to read each matched file's footer to
+/// locate row-group/column byte ranges. Without caching, a long-lived engine
+/// re-parses that footer on every query. This cache lets the custom
+/// [`ParquetFileReaderFactory`] return previously parsed [`ParquetMetaData`] so
+/// each matched file's footer is parsed at most once for the engine's lifetime.
+#[derive(Debug, Default)]
+struct MetadataCache {
+    entries: Mutex<HashMap<String, Arc<ParquetMetaData>>>,
+    /// Number of lookups served from the cache (footer parse avoided).
+    hits: AtomicUsize,
+    /// Number of footers actually parsed and inserted (cache misses).
+    misses: AtomicUsize,
+}
+
+impl MetadataCache {
+    /// Return cached metadata for `key`, counting a hit when present.
+    fn get(&self, key: &str) -> Option<Arc<ParquetMetaData>> {
+        let entries = self.entries.lock().expect("metadata cache poisoned");
+        if let Some(md) = entries.get(key) {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+            Some(Arc::clone(md))
+        } else {
+            None
+        }
+    }
+
+    /// Store freshly parsed metadata, counting a miss (one footer parse).
+    fn insert(&self, key: String, md: Arc<ParquetMetaData>) {
+        self.entries
+            .lock()
+            .expect("metadata cache poisoned")
+            .insert(key, md);
+        self.misses.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `(hits, misses)` — misses equals the number of footers actually parsed.
+    fn stats(&self) -> (usize, usize) {
+        (
+            self.hits.load(Ordering::Relaxed),
+            self.misses.load(Ordering::Relaxed),
+        )
+    }
+}
+
+/// A [`ParquetFileReaderFactory`] that serves Parquet metadata from a shared
+/// [`MetadataCache`], reading (and caching) each file's footer at most once.
+///
+/// Adapted from DataFusion's `parquet_advanced_index` example, but PDQ never
+/// pre-parses `ParquetMetaData` (planning reads row-group counts from the FST
+/// index), so the cache is populated *lazily* on the first read of each file
+/// rather than seeded up front.
+#[derive(Debug)]
+struct CachedParquetFileReaderFactory {
+    object_store: Arc<dyn ObjectStore>,
+    cache: Arc<MetadataCache>,
+    /// Fallback footer size hint, used when DataFusion does not pass one through.
+    metadata_size_hint: Option<usize>,
+}
+
+impl ParquetFileReaderFactory for CachedParquetFileReaderFactory {
+    fn create_reader(
+        &self,
+        _partition_index: usize,
+        partitioned_file: PartitionedFile,
+        metadata_size_hint: Option<usize>,
+        _metrics: &ExecutionPlanMetricsSet,
+    ) -> DataFusionResult<Box<dyn AsyncFileReader + Send>> {
+        let location = partitioned_file.object_meta.location.clone();
+        // Full object-store path is the cache key — basenames collide across the
+        // nested directories PDQ indexes, so we must not key on the file name.
+        let key = location.to_string();
+
+        let mut inner = ParquetObjectReader::new(Arc::clone(&self.object_store), location)
+            .with_file_size(partitioned_file.object_meta.size);
+        if let Some(hint) = metadata_size_hint.or(self.metadata_size_hint) {
+            inner = inner.with_footer_size_hint(hint);
+        }
+
+        Ok(Box::new(ParquetReaderWithCache {
+            key,
+            cache: Arc::clone(&self.cache),
+            inner,
+        }))
+    }
+}
+
+/// Wraps a [`ParquetObjectReader`], serving metadata from the shared cache and
+/// caching the parsed footer on the first miss. Data reads pass straight through.
+struct ParquetReaderWithCache {
+    key: String,
+    cache: Arc<MetadataCache>,
+    inner: ParquetObjectReader,
+}
+
+impl AsyncFileReader for ParquetReaderWithCache {
+    fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, ParquetResult<Bytes>> {
+        self.inner.get_bytes(range)
+    }
+
+    fn get_byte_ranges(
+        &mut self,
+        ranges: Vec<Range<u64>>,
+    ) -> BoxFuture<'_, ParquetResult<Vec<Bytes>>> {
+        self.inner.get_byte_ranges(ranges)
+    }
+
+    fn get_metadata(
+        &mut self,
+        options: Option<&ArrowReaderOptions>,
+    ) -> BoxFuture<'_, ParquetResult<Arc<ParquetMetaData>>> {
+        if let Some(metadata) = self.cache.get(&self.key) {
+            return async move { Ok(metadata) }.boxed();
+        }
+        // Miss: read the footer (honoring page-index options), then cache it so
+        // later queries against this file skip the parse entirely.
+        let key = self.key.clone();
+        let cache = Arc::clone(&self.cache);
+        let options = options.cloned();
+        async move {
+            let metadata = self.inner.get_metadata(options.as_ref()).await?;
+            cache.insert(key, Arc::clone(&metadata));
+            Ok(metadata)
+        }
+        .boxed()
+    }
+}
 
 /// PDQ TableProvider.
 ///
@@ -44,6 +195,10 @@ pub struct PdqTableProvider {
     _table_name: String,
     /// Whether to use row-level selections
     use_row_selections: bool,
+    /// Footer size hint passed to the Parquet reader on the first metadata read.
+    metadata_size_hint: Option<usize>,
+    /// Shared, process-lifetime cache of parsed Parquet metadata.
+    metadata_cache: Arc<MetadataCache>,
 }
 
 impl PdqTableProvider {
@@ -61,7 +216,20 @@ impl PdqTableProvider {
             schema,
             _table_name: table_name,
             use_row_selections,
+            metadata_size_hint: Some(DEFAULT_METADATA_SIZE_HINT),
+            metadata_cache: Arc::new(MetadataCache::default()),
         })
+    }
+
+    /// Set the footer size hint (bytes) for the first metadata read of each file.
+    pub fn set_metadata_size_hint(&mut self, hint: Option<usize>) {
+        self.metadata_size_hint = hint;
+    }
+
+    /// `(hits, misses)` for the shared metadata cache. `misses` is the number of
+    /// Parquet footers actually parsed; once a file is cached, later queries hit.
+    pub fn metadata_cache_stats(&self) -> (usize, usize) {
+        self.metadata_cache.stats()
     }
 
     /// Enable or disable row-level selections
@@ -250,7 +418,28 @@ impl TableProvider for PdqTableProvider {
             .transpose()?
             .unwrap_or_else(|| datafusion::physical_expr::expressions::lit(true));
 
-        let source = Arc::new(ParquetSource::new(self.schema.clone()).with_predicate(predicate));
+        // Serve Parquet metadata from the shared cache so each matched file's
+        // footer is parsed at most once for the engine's lifetime, and apply the
+        // footer size hint so the first (cold) read fetches it in one shot.
+        let object_store = state.runtime_env().object_store(&object_store_url)?;
+        let reader_factory = Arc::new(CachedParquetFileReaderFactory {
+            object_store,
+            cache: Arc::clone(&self.metadata_cache),
+            metadata_size_hint: self.metadata_size_hint,
+        });
+        let mut parquet_source = ParquetSource::new(self.schema.clone())
+            .with_predicate(predicate)
+            .with_parquet_file_reader_factory(reader_factory)
+            // Apply the predicate as a row filter *during* decode (late
+            // materialization). On PDQ's unsorted corpus zonemaps can't prune, so
+            // without this the whole matched row group is decoded and a FilterExec
+            // above the scan drops all but the matching rows. We still report the
+            // filters as Inexact, so that FilterExec stays as a correctness net.
+            .with_pushdown_filters(true);
+        if let Some(hint) = self.metadata_size_hint {
+            parquet_source = parquet_source.with_metadata_size_hint(hint);
+        }
+        let source = Arc::new(parquet_source);
         let mut builder = FileScanConfigBuilder::new(object_store_url, source)
             .with_projection_indices(projection.cloned())?
             .with_limit(limit);
@@ -416,6 +605,8 @@ mod tests {
             schema,
             _table_name: "test".to_string(),
             use_row_selections: false,
+            metadata_size_hint: Some(DEFAULT_METADATA_SIZE_HINT),
+            metadata_cache: Arc::new(MetadataCache::default()),
         };
 
         let filter = col("test_col").eq(lit("test_value"));
