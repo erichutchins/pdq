@@ -8,21 +8,36 @@ PDQ is a high-performance search engine for Parquet files that combines FST (Fin
 
 ### 🎯 **Core Capabilities**
 
-- **Exact-match queries** over Parquet via SQL/DataFusion, with microsecond FST lookups
+- **Exact-match queries** over Parquet via SQL/DataFusion, backed by sub-millisecond FST index lookups
 - **Prefix and lexicographic range lookups** at the index level (`search` subcommand / Python API)
 - **String-valued columns** are indexed (IPs, hashes, IDs, user agents, etc.)
-- **CSV / JSONL / table output** with full Arrow type support
+- **Incremental indexing** — re-indexing only touches new or modified files; `--prune` drops orphan indexes
+- **Python bindings** (`Indexer`, `Searcher`, `QueryEngine`) with zero-copy Arrow transfer to pandas/polars
+- **CSV / JSON / JSONL / NDJSON / table output** with full Arrow type support
 - **Cross-platform** (Windows, Linux, macOS)
 
 > Note: PDQ indexes string (`Utf8`) columns. The `query` (SQL) path resolves
 > **exact-match** equality predicates; prefix and range matching are available
 > as index-level lookups via the `search` subcommand and the Python API.
 
-### 🔥 **ParquetAccessPlan Integration**
+### 🔥 **Row-group precision, not just file precision**
 
-- **True row-group level optimization** using DataFusion's latest APIs
-- **Zero-I/O queries** for searches with no matches (returns without reading any Parquet data)
-- **Multi-core parallel FST processing** for maximum throughput
+PDQ's invariant is **which row groups, not just which files**. The FST index maps
+each value to the exact `(file, row_group)` set that can contain it, and that set
+drives every layer below:
+
+- **Zero-footer-I/O planning** — row-group counts for the `ParquetAccessPlan` come
+  from the FST index metadata, so query *planning* reads no Parquet footers at all.
+- **Zero-I/O on no-match** — if the index has no hits, the query returns immediately
+  without opening a single Parquet file (authoritative from the index).
+- **Cached metadata** — a long-lived engine parses each matched file's footer at
+  most once (a shared `ParquetMetaData` cache), instead of re-parsing per query.
+- **Row-filter pushdown** — the equality predicate is applied *during* Parquet decode
+  (late materialization), so only matching rows are materialized rather than whole
+  row groups.
+- **Exact, no false positives** — unlike probabilistic filters, the FST returns the
+  precise row-group set, so there is no false-positive read tail.
+- **Multi-core FST search** — index lookups fan out across all CPU cores (rayon).
 
 ## 🚀 Quick Start
 
@@ -52,35 +67,60 @@ cargo build --release
 
 PDQ's advantage comes from reading less data. An FST lookup identifies the exact
 row groups that can contain a value, so a query reads only those row groups
-instead of scanning every file. A query with no index matches returns without
+instead of scanning every file, and a query with no index matches returns without
 touching the Parquet files at all.
 
-Measured numbers on a local microbenchmark are in
-[Baseline Benchmarks](#-baseline-benchmarks-simulated) below. Because query time is driven
-by how much data is read rather than the total dataset size, the gap over a full
-scan widens as datasets grow — but the figures that matter are the ones you can
-reproduce, not extrapolations, so this README sticks to measured results.
+PDQ is tuned for the **large-corpus, rare-needle** workload — finding a handful of
+indicators across many Parquet log files. The honest, reproducible numbers live in
+**[BENCHMARKS.md](BENCHMARKS.md)**, a scaled head-to-head against Parquet-native
+bloom filters on a dedicated EC2 box over a 10 / 100 / 1000-file ladder. In short:
+
+- **Pruning decision (which row groups):** PDQ wins decisively at every scale, with
+  **zero false positives** — an mmap'd FST traversal vs. opening and footer-parsing
+  every file.
+- **End-to-end, warm cache:** PDQ pulls ahead as the corpus grows; the crossover sits
+  between small and large ladders, and the lead widens at 1000 files.
+- **End-to-end, cold cache:** a compact embedded bloom can win first-touch I/O — PDQ's
+  end-to-end edge is a warm, high-QPS, long-lived-service phenomenon.
+- **Cost:** the FST index is a separate side structure (larger on disk than embedded
+  blooms) with a one-time build cost.
+
+See [BENCHMARKS.md](BENCHMARKS.md) for the full methodology, the corrected results,
+and an adversarial review of the limitations.
 
 ## 🏗️ Architecture Overview
 
-### Core Components
+Data flows through three layers, all keyed on the FST index format:
 
 ```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   FST Indexes   │    │ AccessPlanBuilder│    │ DataFusion Exec │
-│                 │    │                  │    │                 │
-│ • Parallel scan │───▶│ • Row-group IDs  │───▶│ • Optimized I/O │
-│ • Multi-core    │    │ • ParquetAccess  │    │ • Predicate push│
-│ • Authoritative │    │ • Statistics     │    │ • Zero I/O path │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
+┌────────────────────┐   ┌────────────────────┐   ┌────────────────────────┐
+│ Indexer            │   │ IndexQueryEngine   │   │ PdqTableProvider       │
+│ (src/index.rs)     │   │ (src/query.rs)     │   │ (src/provider.rs)      │
+│                    │──▶│                    │──▶│                        │
+│ • walks Parquet    │   │ • mmaps the FSTs   │   │ • FST matches →        │
+│   dirs, builds one │   │ • exact/prefix/    │   │   ParquetAccessPlan    │
+│   fst::Set per     │   │   range search,    │   │ • stock ParquetSource  │
+│   (file, column)   │   │   parallel (rayon) │   │   scan (cached meta,   │
+│ • incremental      │   │ • row-group count  │   │   row-filter pushdown) │
+│   (skips unchanged)│   │   from index meta  │   │ • empty plan on        │
+│ • key: value\x00rgN│   │   (zero footer I/O)│   │   no-match (zero I/O)  │
+└────────────────────┘   └────────────────────┘   └────────────────────────┘
 ```
 
-### Data Flow
-
-1. **Index Building**: FST indexes map `value → (file_hash, row_group_id)`
-2. **Query Processing**: Parallel FST search across all CPU cores
-3. **Access Plan Creation**: ParquetAccessPlan targets specific row groups
-4. **DataFusion Execution**: Reads only the necessary data
+1. **Indexer** (`src/index.rs`) — walks a directory of Parquet files and builds one
+   immutable `fst::Set` per `(file, column)`. Keys are `value\x00rgN`. Indexes live at
+   `<index-dir>/<file-path-hash>/<column>.fst` with a `metadata.txt` recording the
+   original path, mtime, size, and the file's total row-group count. Indexing is
+   incremental; `--prune` drops indexes for files that no longer exist.
+2. **IndexQueryEngine** (`src/query.rs`) — mmaps the FSTs and runs exact/prefix/range
+   searches in parallel (rayon) across all indexed files, returning the matching
+   `(file, row_groups)`. It also serves `num_row_groups` straight from `metadata.txt`,
+   so the provider can size access plans without touching a Parquet footer.
+3. **PdqTableProvider** (`src/provider.rs`) — a DataFusion `TableProvider` that turns
+   FST matches into a `ParquetAccessPlan` per file and hands the scan to a stock
+   `ParquetSource`. This is DataFusion's documented secondary-index pattern, so
+   projection, predicate/statistics pruning, and page-index pruning all work for free —
+   plus a shared metadata cache and row-filter pushdown (see the deep dive below).
 
 ## 🔧 Advanced Usage
 
@@ -318,6 +358,26 @@ for &row_group_idx in &matched_row_groups {
 let file = PartitionedFile::new(path, size).with_extension(access_plan);
 ```
 
+Because the row-group count for `ParquetAccessPlan::new_none(total_row_groups)` comes
+from the FST index metadata (not the Parquet footer), planning performs **no Parquet
+footer I/O**.
+
+### Execution-path optimizations
+
+On top of the stock `ParquetSource`, the provider wires in two DataFusion 54 features
+(adapted from its `parquet_advanced_index` example) that matter for a long-lived,
+high-QPS service:
+
+- **Cached Parquet metadata** — a `ParquetFileReaderFactory` serves `ParquetMetaData`
+  from a process-lifetime cache, so each matched file's footer is parsed at most once
+  for the engine's lifetime instead of on every query. A footer size hint lets the
+  first (cold) read fetch the footer in a single shot.
+- **Row-filter pushdown** — `with_pushdown_filters(true)` applies the equality predicate
+  as a row filter *during* decode (late materialization). On an unsorted corpus,
+  min/max zonemaps can't prune within a row group, so without this the whole matched
+  row group is decoded and a `FilterExec` above the scan throws most of it away; with
+  it, only the matching rows are materialized.
+
 ### Zero I/O Optimization
 
 ```rust
@@ -327,24 +387,34 @@ if file_row_groups.is_empty() {
 }
 ```
 
-## 📊 Baseline Benchmarks (Simulated)
+## 📊 Benchmarks
 
-The following benchmarks were generated using the provided `misc/fabricate_test_data.py` script on a local developer machine.
+The canonical, reproducible benchmark is **[BENCHMARKS.md](BENCHMARKS.md)** — a scaled
+FST-vs-bloom-filter shootout (10 / 100 / 1000 files, warm + cold, Layer-1 pruning and
+Layer-2 end-to-end) run on a dedicated EC2 box, including an adversarial review of its
+own limitations. Read that for any number you intend to quote.
 
-### Search Performance Comparison
-**Dataset**: 100 Parquet files, 10,000,000 rows, nested in a 2x10 hierarchy.
-**Tool**: Brute Force baseline using Polars (`pl.scan_parquet().filter().collect()`).
+### Quick local sanity check
 
-| Test Case | Polars Python (Brute) | PDQ Python Bindings | PDQ CLI (Native Rust) |
-| :--- | :--- | :--- | :--- |
-| **Match** (Target IP) | ~215 ms | ~112 ms (**2x fast**) | **~20 ms** (**10x fast**) |
+```bash
+uv run misc/fabricate_test_data.py --out ./sample_data --depth 2 --breadth 10 --rows 100000
+./target/release/pdq index --path ./sample_data --column src_ip
+./target/release/pdq query --column src_ip --term 192.168.133.7 --data-path ./sample_data
+```
 
-> **Why the difference?** Polars is incredibly efficient at brute-forcing data that fits in memory/cache. However, its execution time scales linearly with the number of rows. PDQ's execution time is nearly constant because the FST index lookup determines exactly which row groups to read, skipping 99.9% of the Work.
+At small scale, process startup and footer metadata dominate, so the win over a Polars
+brute-force scan is modest; the advantage grows with corpus size because query time is
+driven by how much data is read, not by the total dataset size. PDQ's clearest,
+scale-independent edge is the **pruning decision** (which row groups, exactly, with no
+false positives) — see Layer 1 in [BENCHMARKS.md](BENCHMARKS.md).
 
-> **Why the difference?** On small datasets, process startup and metadata overhead account for most of the time. PDQ's advantage grows exponentially with data volume as it skips nearly 100% of the I/O that a full scan must perform.
+### Index footprint
 
-### Index Building
-Building the `src_ip` index for the 160k row dataset takes **< 1 second** on modern NVMe drives, with an index size of approximately **2-5%** of the original Parquet data volume.
+The FST index is a **separate side structure** whose size is cardinality-driven: a
+high-cardinality column (IPs, hashes) produces a larger FST than a low-cardinality one,
+which can collapse to near-zero. It is larger on disk than embedded Parquet bloom
+filters — a deliberate trade for exactness and faster, footer-free pruning. See the
+measured storage footprint table in [BENCHMARKS.md](BENCHMARKS.md).
 
 ## 🤝 Contributing
 
@@ -369,7 +439,8 @@ git push origin feature/your-feature
 ```
 
 ## 📚 Documentation
-- TBD
+- [BENCHMARKS.md](BENCHMARKS.md) — the canonical FST-vs-bloom shootout (methodology, results, limitations)
+- [misc/shootout/README.md](misc/shootout/README.md) — runbook to reproduce the shootout
 - [API Documentation](https://docs.rs/pdq)
 
 ## 🙏 Acknowledgments
