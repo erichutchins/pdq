@@ -193,7 +193,6 @@ impl Searcher {
 #[pyclass]
 pub struct QueryEngine {
     ctx: Arc<SessionContext>,
-    index_engine: Arc<IndexQueryEngine>,
 }
 
 #[pymethods]
@@ -220,38 +219,20 @@ impl QueryEngine {
         ctx.register_table("pdq_data", Arc::new(table_provider))
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to register table: {}", e)))?;
 
-        Ok(Self {
-            ctx: Arc::new(ctx),
-            index_engine: Arc::new(IndexQueryEngine::new(index_dir)),
-        })
+        Ok(Self { ctx: Arc::new(ctx) })
     }
 
     /// Query Parquet files for records matching a specific value in a column
     /// Returns PyArrow table (list of record batches)
     fn query<'py>(&self, column: &str, term: &str, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let ctx = self.ctx.clone();
-        let index_engine = self.index_engine.clone();
         let column = column.to_string();
         let term = term.to_string();
 
         future_into_py(py, async move {
-            // First check if there are any matches using the IndexQueryEngine
-            let file_row_groups = tokio::task::spawn_blocking({
-                let index_engine = index_engine.clone();
-                let column = column.clone();
-                let term = term.clone();
-                move || index_engine.exact_search(&column, &term)
-            })
-            .await
-            .map_err(|e| PyRuntimeError::new_err(format!("Task failed: {}", e)))?
-            .map_err(|e| PyRuntimeError::new_err(format!("Search failed: {}", e)))?;
-
-            if file_row_groups.is_empty() {
-                // No matches found, return None
-                return Python::attach(|py| Ok(py.None()));
-            }
-
-            // Build and execute the query using reused context
+            // The provider's scan() runs the FST pruning itself and short-circuits to
+            // an empty plan when nothing matches, so we go straight to the query
+            // instead of searching the index a second time here just to peek.
             let df = ctx
                 .table("pdq_data")
                 .await

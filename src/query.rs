@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use walkdir::WalkDir;
 
 /// Represents matching results for a single file
@@ -19,7 +19,12 @@ pub struct FileMatches {
     pub row_groups: Vec<usize>,
 }
 
-#[derive(Debug, Clone)]
+/// Cache of memory-mapped FSTs keyed by `(file_hash, column)`. Populated lazily on
+/// first access so a long-lived engine pays the open + mmap + header-validation cost
+/// once per (file, column) rather than on every query.
+type FstCache = RwLock<HashMap<(String, String), Arc<Set<Mmap>>>>;
+
+#[derive(Clone)]
 pub struct IndexQueryEngine {
     index_dir: PathBuf,
     /// Maps file hash to actual file path for result resolution
@@ -28,6 +33,18 @@ pub struct IndexQueryEngine {
     /// Recorded at index time (metadata.txt line 4) so queries can build a
     /// ParquetAccessPlan without re-reading the Parquet footer.
     row_group_counts: Arc<HashMap<String, usize>>,
+    /// Resident FSTs, shared across clones (Arc) so the cache survives the
+    /// engine → provider handoff and is reused across queries.
+    fst_cache: Arc<FstCache>,
+}
+
+impl std::fmt::Debug for IndexQueryEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IndexQueryEngine")
+            .field("index_dir", &self.index_dir)
+            .field("indexed_files", &self.file_map.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl IndexQueryEngine {
@@ -39,6 +56,7 @@ impl IndexQueryEngine {
             index_dir,
             file_map: Arc::new(file_map),
             row_group_counts: Arc::new(row_group_counts),
+            fst_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -85,70 +103,122 @@ impl IndexQueryEngine {
         (map, counts)
     }
 
-    /// Perform an exact match search across all FST indexes for a column
-    /// Returns file matches with actual paths and row group IDs that contain the search term
-    pub fn exact_search(&self, column: &str, term: &str) -> Result<Vec<FileMatches>> {
-        // Collect directory entries first for parallel processing
-        let entries: Vec<_> = WalkDir::new(&self.index_dir)
-            .min_depth(1)
-            .max_depth(1)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_dir())
-            .collect();
+    /// Return the memory-mapped FST for `(file_hash, column)`, loading and caching
+    /// it on first use. `Ok(None)` means that file has no index for that column.
+    fn get_or_load_set(&self, file_hash: &str, column: &str) -> Result<Option<Arc<Set<Mmap>>>> {
+        let key = (file_hash.to_string(), column.to_string());
 
-        // Process FST files in parallel
-        let results: Result<Vec<_>> = entries
+        // Fast path: already resident.
+        if let Some(set) = self.fst_cache.read().expect("fst cache poisoned").get(&key) {
+            return Ok(Some(set.clone()));
+        }
+
+        // Slow path: open + mmap + validate once, then publish to the cache. A
+        // missing FST for this (file, column) is not an error — it just means no
+        // index was built for that column on that file.
+        let index_path = self.index_dir.join(file_hash).join(format!("{column}.fst"));
+        let file = match File::open(&index_path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let mmap = unsafe { Mmap::map(&file)? };
+        let set = Arc::new(Set::new(mmap)?);
+
+        let mut cache = self.fst_cache.write().expect("fst cache poisoned");
+        // A concurrent miss may have inserted while we mmapped; keep the first winner.
+        let resident = cache.entry(key).or_insert(set);
+        Ok(Some(resident.clone()))
+    }
+
+    /// Run a per-FST search across every indexed file in parallel, collecting the
+    /// files whose FST yielded a non-empty row-group set. Enumerates the cached
+    /// file map (no directory walk) and reuses resident FSTs via the cache.
+    fn search_all<F>(&self, column: &str, search: F) -> Result<Vec<FileMatches>>
+    where
+        F: Fn(&Set<Mmap>) -> Result<Vec<usize>> + Sync + Send,
+    {
+        let file_hashes: Vec<&String> = self.file_map.keys().collect();
+        let results: Result<Vec<_>> = file_hashes
             .par_iter()
-            .map(|entry| {
-                let file_hash = entry.file_name().to_string_lossy().to_string();
-                let index_path = self
-                    .index_dir
-                    .join(&file_hash)
-                    .join(format!("{column}.fst"));
-
-                if index_path.exists() {
-                    let row_groups = self.search_index(&index_path, term)?;
-                    if !row_groups.is_empty() {
-                        Ok(Some((file_hash, row_groups)))
-                    } else {
-                        Ok(None)
-                    }
-                } else {
+            .map(|file_hash| {
+                let Some(set) = self.get_or_load_set(file_hash, column)? else {
+                    return Ok(None);
+                };
+                let row_groups = search(&set)?;
+                if row_groups.is_empty() {
                     Ok(None)
+                } else {
+                    Ok(Some(((*file_hash).clone(), row_groups)))
                 }
             })
             .collect();
 
-        let file_row_groups: HashMap<String, Vec<usize>> = results?.into_iter().flatten().collect();
-
-        // Convert to FileMatches with actual paths
-        let matches = file_row_groups
+        let matches = results?
             .into_iter()
+            .flatten()
             .map(|(file_hash, row_groups)| {
                 let file_path = self
                     .file_map
                     .get(&file_hash)
                     .cloned()
                     .unwrap_or_else(|| PathBuf::from(format!("file-{}", file_hash)));
-
                 FileMatches {
                     file_path,
                     row_groups,
                 }
             })
             .collect();
-
         Ok(matches)
     }
 
-    /// Search a specific FST index file for a term
-    /// Returns the row group IDs that contain the term
-    fn search_index(&self, index_path: &Path, term: &str) -> Result<Vec<usize>> {
-        let file = File::open(index_path)?;
-        let mmap = unsafe { Mmap::map(&file)? };
-        let set = Set::new(mmap)?;
+    /// Perform an exact match search across all FST indexes for a column
+    /// Returns file matches with actual paths and row group IDs that contain the search term
+    pub fn exact_search(&self, column: &str, term: &str) -> Result<Vec<FileMatches>> {
+        self.search_all(column, |set| self.search_set(set, term))
+    }
 
+    /// Exact-match a *batch* of terms (a watchlist) in one pass: each per-file
+    /// FST is mmapped exactly once and every term is probed against it, instead
+    /// of re-walking the index directory and re-mmapping per term. Returns the
+    /// total number of (file, term) pairs that matched — the analog of summing
+    /// `exact_search(term).len()` over `terms`, but with the index open
+    /// amortized across the whole watchlist.
+    pub fn exact_search_multi(&self, column: &str, terms: &[&str]) -> Result<usize> {
+        let file_hashes: Vec<&String> = self.file_map.keys().collect();
+        let counts: Result<Vec<usize>> = file_hashes
+            .par_iter()
+            .map(|file_hash| {
+                let Some(set) = self.get_or_load_set(file_hash, column)? else {
+                    return Ok(0usize);
+                };
+                let mut hits = 0usize;
+                for term in terms {
+                    if Self::set_has_term(&set, term) {
+                        hits += 1;
+                    }
+                }
+                Ok(hits)
+            })
+            .collect();
+
+        Ok(counts?.into_iter().sum())
+    }
+
+    /// Whether an already-loaded FST contains any row-group key for `term`.
+    fn set_has_term(set: &Set<Mmap>, term: &str) -> bool {
+        let start_key = format!("{term}{}", key_format::VALUE_RG_SEPARATOR);
+        let end_key = format!("{term}{}", key_format::RANGE_UPPER_BOUND_MARKER);
+        set.range()
+            .ge(start_key.as_bytes())
+            .lt(end_key.as_bytes())
+            .into_stream()
+            .next()
+            .is_some()
+    }
+
+    /// Collect the row groups containing `term` from an already-resident FST.
+    fn search_set(&self, set: &Set<Mmap>, term: &str) -> Result<Vec<usize>> {
         // Use HashSet for O(n) deduplication instead of sort + dedup
         let mut row_groups = HashSet::new();
 
@@ -213,66 +283,11 @@ impl IndexQueryEngine {
 
     /// Prefix search - find all entries that start with the given prefix
     pub fn prefix_search(&self, column: &str, prefix: &str) -> Result<Vec<FileMatches>> {
-        // Collect directory entries first for parallel processing
-        let entries: Vec<_> = WalkDir::new(&self.index_dir)
-            .min_depth(1)
-            .max_depth(1)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_dir())
-            .collect();
-
-        // Process FST files in parallel
-        let results: Result<Vec<_>> = entries
-            .par_iter()
-            .map(|entry| {
-                let file_hash = entry.file_name().to_string_lossy().to_string();
-                let index_path = self
-                    .index_dir
-                    .join(&file_hash)
-                    .join(format!("{column}.fst"));
-
-                if index_path.exists() {
-                    let row_groups = self.prefix_search_index(&index_path, prefix)?;
-                    if !row_groups.is_empty() {
-                        Ok(Some((file_hash, row_groups)))
-                    } else {
-                        Ok(None)
-                    }
-                } else {
-                    Ok(None)
-                }
-            })
-            .collect();
-
-        let file_row_groups: HashMap<String, Vec<usize>> = results?.into_iter().flatten().collect();
-
-        // Convert to FileMatches with actual paths
-        let matches = file_row_groups
-            .into_iter()
-            .map(|(file_hash, row_groups)| {
-                let file_path = self
-                    .file_map
-                    .get(&file_hash)
-                    .cloned()
-                    .unwrap_or_else(|| PathBuf::from(format!("file-{}", file_hash)));
-
-                FileMatches {
-                    file_path,
-                    row_groups,
-                }
-            })
-            .collect();
-
-        Ok(matches)
+        self.search_all(column, |set| self.prefix_search_set(set, prefix))
     }
 
-    /// Prefix search within a specific FST index
-    fn prefix_search_index(&self, index_path: &Path, prefix: &str) -> Result<Vec<usize>> {
-        let file = File::open(index_path)?;
-        let mmap = unsafe { Mmap::map(&file)? };
-        let set = Set::new(mmap)?;
-
+    /// Prefix search within an already-resident FST.
+    fn prefix_search_set(&self, set: &Set<Mmap>, prefix: &str) -> Result<Vec<usize>> {
         // Use HashSet for O(n) deduplication - important for prefix searches
         // where multiple values in the same row group may match the prefix
         let mut row_groups = HashSet::new();
@@ -326,66 +341,11 @@ impl IndexQueryEngine {
 
     /// Range search - find all entries between start and end values (inclusive)
     pub fn range_search(&self, column: &str, start: &str, end: &str) -> Result<Vec<FileMatches>> {
-        // Collect directory entries first for parallel processing
-        let entries: Vec<_> = WalkDir::new(&self.index_dir)
-            .min_depth(1)
-            .max_depth(1)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_dir())
-            .collect();
-
-        // Process FST files in parallel
-        let results: Result<Vec<_>> = entries
-            .par_iter()
-            .map(|entry| {
-                let file_hash = entry.file_name().to_string_lossy().to_string();
-                let index_path = self
-                    .index_dir
-                    .join(&file_hash)
-                    .join(format!("{column}.fst"));
-
-                if index_path.exists() {
-                    let row_groups = self.range_search_index(&index_path, start, end)?;
-                    if !row_groups.is_empty() {
-                        Ok(Some((file_hash, row_groups)))
-                    } else {
-                        Ok(None)
-                    }
-                } else {
-                    Ok(None)
-                }
-            })
-            .collect();
-
-        let file_row_groups: HashMap<String, Vec<usize>> = results?.into_iter().flatten().collect();
-
-        // Convert to FileMatches with actual paths
-        let matches = file_row_groups
-            .into_iter()
-            .map(|(file_hash, row_groups)| {
-                let file_path = self
-                    .file_map
-                    .get(&file_hash)
-                    .cloned()
-                    .unwrap_or_else(|| PathBuf::from(format!("file-{}", file_hash)));
-
-                FileMatches {
-                    file_path,
-                    row_groups,
-                }
-            })
-            .collect();
-
-        Ok(matches)
+        self.search_all(column, |set| self.range_search_set(set, start, end))
     }
 
-    /// Range search within a specific FST index
-    fn range_search_index(&self, index_path: &Path, start: &str, end: &str) -> Result<Vec<usize>> {
-        let file = File::open(index_path)?;
-        let mmap = unsafe { Mmap::map(&file)? };
-        let set = Set::new(mmap)?;
-
+    /// Range search within an already-resident FST.
+    fn range_search_set(&self, set: &Set<Mmap>, start: &str, end: &str) -> Result<Vec<usize>> {
         // Use HashSet for O(n) deduplication - important for range searches
         // where multiple values in the same row group may match the range
         let mut row_groups = HashSet::new();
@@ -532,6 +492,62 @@ mod tests {
         assert!(row_groups.contains(&0));
         assert!(row_groups.contains(&1));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_exact_search_multi() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let index_dir = temp_dir.path().join("test-index");
+        fs::create_dir_all(&index_dir)?;
+
+        let sep = key_format::VALUE_RG_SEPARATOR;
+        // h1 contains 1.1.1.1 and 2.2.2.2; h2 contains only 1.1.1.1.
+        write_test_fst(
+            &index_dir,
+            "h1",
+            "src_ip",
+            &[&format!("1.1.1.1{sep}rg0"), &format!("2.2.2.2{sep}rg1")],
+        )?;
+        write_test_fst(&index_dir, "h2", "src_ip", &[&format!("1.1.1.1{sep}rg3")])?;
+
+        let engine = IndexQueryEngine::new(&index_dir);
+
+        // Watchlist: 1.1.1.1 hits h1+h2 (2), 2.2.2.2 hits h1 (1), 9.9.9.9 hits none.
+        // exact_search_multi counts (file, term) pairs → 3.
+        let hits = engine.exact_search_multi("src_ip", &["1.1.1.1", "2.2.2.2", "9.9.9.9"])?;
+        assert_eq!(hits, 3);
+
+        // Unknown column matches nothing.
+        assert_eq!(engine.exact_search_multi("nope", &["1.1.1.1"])?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_exact_search_column_isolation_and_repeatable() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let index_dir = temp_dir.path().join("test-index");
+        fs::create_dir_all(&index_dir)?;
+
+        let sep = key_format::VALUE_RG_SEPARATOR;
+        // Same file, same value, but a different row group per column. A cache keyed
+        // only by file (not (file, column)) would cross the wires here.
+        write_test_fst(&index_dir, "h1", "src_ip", &[&format!("1.2.3.4{sep}rg0")])?;
+        write_test_fst(&index_dir, "h1", "dst_ip", &[&format!("1.2.3.4{sep}rg5")])?;
+
+        let engine = IndexQueryEngine::new(&index_dir);
+
+        let src = engine.exact_search("src_ip", "1.2.3.4")?;
+        assert_eq!(src.len(), 1);
+        assert_eq!(src[0].row_groups, vec![0]);
+
+        let dst = engine.exact_search("dst_ip", "1.2.3.4")?;
+        assert_eq!(dst.len(), 1);
+        assert_eq!(dst[0].row_groups, vec![5]);
+
+        // A repeated call (exercising any resident-FST cache) is identical.
+        let src_again = engine.exact_search("src_ip", "1.2.3.4")?;
+        assert_eq!(src_again[0].row_groups, vec![0]);
         Ok(())
     }
 
