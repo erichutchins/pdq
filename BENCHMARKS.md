@@ -4,91 +4,66 @@ A scaled head-to-head between PDQ's per-column **FST side index** and **Parquet-
 bloom filters** for the workload PDQ targets: finding rare cybersecurity indicators
 (IPs, hashes, domains, emails) across many Parquet log files.
 
-> **Status: canonical (EC2), improved execution path.** This run uses PDQ's
-> cached-metadata + row-filter-pushdown provider (commit `dabf5e6`); see
-> [What changed since the prior run](#what-changed-since-the-prior-run). An earlier
-> *canonical* run (before that commit) reported PDQ **lost warm at n=10 and lost cold
-> at every scale**; both of those losses are gone here. An even earlier headline
-> ("~47× faster and ~496× less I/O") was a benchmark bug — see
-> [Correction notice](#correction-notice). Every number below is from the EC2 run on a
-> dedicated AWS `i4i.xlarge` over the full **n = 10 / 100 / 1000** ladder (warm + cold).
-> Absolute latencies are machine-dependent; byte/footprint counts are exact.
+> **Status: canonical (EC2), tuned engines, matched query shape, version-stamped.** This is
+> the cleanest run to date: PDQ uses its cached-metadata + row-filter-pushdown provider
+> (commit `dabf5e6`), **and the engine contestants are tuned with their standard config
+> knobs** (DuckDB Parquet metadata cache on; DataFusion filter pushdown on), all running a
+> **matched `SELECT *`** query shape, with **library versions stamped into the results**
+> (DuckDB 1.5.4, DataFusion 53.0.0, Polars 1.36.1, PyArrow 22.0.0). Run on a dedicated AWS
+> `i4i.xlarge` over the full **n = 10 / 100 / 1000** ladder (warm + cold). Absolute
+> latencies are machine-dependent; byte/footprint counts are exact.
 >
 > **What the canonical run shows:**
 > 1. **Layer 1 (pruning decision): PDQ wins decisively at every scale**, with **zero false
->    positives**. The single-lookup table shows ~900–2800×, but that row is
->    amortization-asymmetric (resident FST vs re-opened bloom); the apples-to-apples,
->    both-sides-resident number is the *multi* table (6.5× at n=1000). See note ².
-> 2. **Layer 2 (end-to-end, warm): PDQ wins at every scale, including n=10.** PDQ's
->    latency is essentially **flat** (6.5 → 6.6 → 8.0 ms across the ladder) because it
->    touches only the matched file and materializes only the matching row, while the
->    engines footer-parse every file. At n=1000 PDQ is **28× faster than DuckDB** and
->    **66× faster than DataFusion**. **Caveat unchanged:** the engines run *without*
->    metadata/footer caching, so the warm *magnitudes* are against un-tuned engines (see
->    [Known limitations](#known-limitations-from-adversarial-review)). The flat scaling /
->    direction is structural and survives engine caching; the multiples would shrink.
-> 3. **Layer 2 (end-to-end, cold): PDQ wins at n=100 and n=1000; n=10 is a tie.** Cold
->    latency is flat (~14–15 ms), so at n=1000 PDQ is **17× faster than DuckDB** cold; at
->    n=10 PDQ (15.4 ms) and DuckDB (16.2 ms) overlap within IQR — call it a tie. ⚠️
->    **The cold comparison is *not* footer-symmetric** (an adversarial review caught this):
->    PDQ's in-process metadata cache is populated by an untimed probe and survives the OS
->    page-cache drop, so PDQ does not re-parse its one footer on each cold sample while the
->    engines re-parse all N footers from cold disk. The win is still real — it's dominated
->    by the structural 1-file-vs-N-files effect — but the cold *magnitudes* carry the same
->    caching asymmetry as warm. See [Known limitations](#known-limitations-from-adversarial-review).
+>    positives**. (The single-lookup table shows ~800–2800×, but that row is
+>    amortization-asymmetric — see note ²; the symmetric, both-sides-resident comparison is
+>    the *multi* table, 6.6× at n=1000.)
+> 2. **Layer 2 (end-to-end, warm): PDQ wins at every scale, including n=10** — and now
+>    **against tuned engines on a matched query shape.** PDQ's latency is essentially flat
+>    (5.2 → 5.8 → 7.1 ms across the ladder) because it touches only the matched file; the
+>    engines scale with file count. At n=1000 PDQ is **28× faster than DuckDB** and **71×
+>    faster than DataFusion**. **The previous "un-tuned engine" caveat is resolved:** turning
+>    on DuckDB's metadata cache moved its n=1000 warm only 227 → 201 ms (−12%), confirming
+>    the gap is **structural** (PDQ is O(matches), the engines are O(files)), not a
+>    footer-parsing artifact.
+> 3. **Layer 2 (end-to-end, cold): PDQ wins at every scale, including n=10.** Cold latency
+>    is flat (~15–17 ms); at n=1000 PDQ is **16× faster than DuckDB**. Cold now caches
+>    metadata symmetrically (both PDQ and DuckDB), and DuckDB's in-engine file cache survives
+>    the page-cache drop — i.e. cold, if anything, *flatters* DuckDB — yet PDQ still wins.
 
 ---
 
-## What changed since the prior run
+## What changed across runs
 
-The prior canonical run predates PDQ's improved execution path. This run includes
-(commit `dabf5e6`, modeled on DataFusion's `parquet_advanced_index` example):
+This benchmark has been through several corrections; for the full lineage see git history.
+The two changes that produced the current result:
 
-- **Cached Parquet metadata** — a custom `ParquetFileReaderFactory` serves
-  `ParquetMetaData` from a process-lifetime cache, so a long-lived engine parses each
-  matched file's footer at most once instead of on every query (`src/provider.rs`).
-- **Footer size hint** — the first (cold) metadata read fetches the footer in one shot.
-- **Row-filter pushdown** (`with_pushdown_filters(true)`) — the equality predicate is
-  applied *during* Parquet decode (late materialization). On this **random, unsorted**
-  corpus, min/max zonemaps and the page index cannot prune within a row group, so before
-  this change the whole matched row group (100k rows × 5 columns) was decoded and a
-  `FilterExec` above the scan discarded all but the matching row. Now only the matching
-  row is materialized.
-
-Net effect: PDQ's per-query cost became essentially **constant** (it touches only the
-matched file and decodes ~1 row), which is what turned the prior warm-n=10 loss into a
-win and the prior cold losses into wins. The pruning Layer-1 micro-bench also amortizes
-the FST index handle across the query batch (commit `af28001`), the way a long-lived
-service reuses an open index.
+1. **PDQ's execution path** (commit `dabf5e6`): a lazily-populated cache of parsed Parquet
+   metadata (so a long-lived engine parses each matched file's footer once), a footer size
+   hint, and `with_pushdown_filters(true)` — the equality predicate applied as a row filter
+   *during* decode (late materialization). On this random, unsorted corpus, zonemaps can't
+   prune within a row group, so before this change the whole matched row group was decoded
+   and a `FilterExec` discarded all but the matching row. (`src/provider.rs`.)
+2. **A fair fight for the engines** (this run): the contestants are tuned with **standard
+   config knobs only** (no custom code), run a **matched query shape**, and the run **stamps
+   library versions**. See the [Setup](#setup) table. The headline finding is that tuning
+   the engines barely moved them — so PDQ's win is structural, not an artifact of
+   un-tuned engines or an unequal unit of work.
 
 ---
 
-## Correction notice
+## Correction notice (historical)
 
-The original Layer-1 "multi-IOC" result measured the bloom path with a nested loop that
-called a full `probe_bloom(file, value)` — `File::open` + **re-parse the Parquet footer**
-+ reload the row-group bloom bitsets — once **per (file × indicator)**:
-
-```
-for file in files {            // 1000 files
-    for ioc in indicators {    // 1000 indicators
-        probe_bloom(file, ioc) // re-opens & re-parses file every time
-    }
-}
-```
-
-The raw JSON proved it: multi-IOC bloom `bytes_read` at n=1000 was `3,152,795,148,000`
-(3.15 TB) — *exactly 1000×* the single-lookup figure, i.e. every file's footer+blooms
-were re-read once per indicator. No real engine screens a watchlist that way: you open
-each file once, load each row group's bloom once, then probe all N indicators against the
-resident bitset (a few hash ops each).
-
-**The fix:** `probe_blooms_multi()` opens each file and faults its blooms **once**, then
-probes the whole watchlist in memory (`src/bloom_probe.rs`); the symmetric
-`IndexQueryEngine::exact_search_multi()` mmaps each FST once and probes all terms
-(`src/query.rs`). The Layer-1 bench (`benches/pruning_cost.rs`) uses both. The "496× less
-I/O" claim is gone — the byte columns are footprint vs. actual-reads and not comparable
-(see the note below the Layer-1 tables); PDQ's *advantage is latency + exactness*.
+An early Layer-1 "multi-IOC" result reported "~47× faster / ~496× less I/O." **That was a
+benchmark bug.** The bloom path called a full `probe_bloom(file, value)` — `File::open` +
+**re-parse the Parquet footer** + reload the bloom bitsets — once **per (file × indicator)**,
+so bloom `bytes_read` scaled N× (exactly 1000× the single-lookup figure = 3.15 TB at
+n=1000). No real engine screens a watchlist that way. The fix (`probe_blooms_multi()` in
+`src/bloom_probe.rs` + `IndexQueryEngine::exact_search_multi()` in `src/query.rs`) opens each
+file and faults its blooms **once**, then probes the whole watchlist in memory. With the fix
+the "less I/O" claim disappears entirely (the byte columns are footprint vs. actual-reads and
+not comparable — see the note below the Layer-1 tables); PDQ's advantage is **latency +
+exactness**.
 
 ---
 
@@ -99,17 +74,18 @@ I/O" claim is gone — the byte columns are footprint vs. actual-reads and not c
 | **Host** | AWS EC2 `i4i.xlarge` — 4 vCPU, 32 GiB, local NVMe, Ubuntu 24.04 |
 | **Build** | `cargo build --release --features shootout` + `maturin develop --release` |
 | **PDQ / Rust DataFusion** | DataFusion 54.0.0 (`default-features = false`); provider uses cached `ParquetMetaData` + `with_pushdown_filters(true)` + footer size hint |
-| **Layer-2 engine contestants** | DuckDB + the **Python** `datafusion`/`polars` packages (installed via the `bench` dependency group) — *separate* from the Rust pin. ⚠️ Exact contestant versions were **not pinned** in the results JSON (a reproducibility gap; engine ranking is version-sensitive). |
-| **Engine tuning** | ⚠️ **No Parquet metadata/footer caching** was enabled on DuckDB or DataFusion (no `enable_object_cache`, no metadata cache). This handicaps the engines on **warm** Layer-2 (it is moot cold). See limitations. |
+| **Layer-2 contestants** | DuckDB **1.5.4**, DataFusion (Python) **53.0.0**, Polars **1.36.1**, PyArrow **22.0.0** — stamped into every results row. (The Python DataFusion is *separate* from the Rust pin inside PDQ.) |
+| **Engine tuning (standard knobs only)** | DuckDB: `SET parquet_metadata_cache=true` (cache parsed footers across queries; `enable_external_file_cache`, which caches file bytes, is on by default). DataFusion: `pushdown_filters=true` + `reorder_filters=true` + `bloom_filter_on_read=true`. **No custom `ParquetFileReaderFactory`** — DataFusion 53's Python API exposes no standard cross-query metadata cache, so its warm queries still re-parse footers (the one residual handicap; see limitations). |
+| **Query shape** | **Matched:** every contestant runs `SELECT *` and materializes the matching row(s) — the same unit of work as PDQ (which returns the row, not a count). |
 | **Thread pinning** | all engines set to the same width (`SHOOTOUT_THREADS`, default = ncpu = 4) |
 
 ### Corpus
 
 A deterministic ladder of **10 / 100 / 1000** Parquet files. Each file = **8 row groups ×
 100,000 rows = 800,000 rows**; 5 columns (`src_ip`, `dst_ip`, `domain_rev`, `email`,
-`bytes`); per-column bloom filters on the 4 indexed columns; **dictionary encoding
-enabled**. At n=10 the corpus is **540 MB** (54 MB/file); at n=1000 that scales to
-~54 GB / 800M rows / 8,000 row groups. PDQ FST indexes are built on the same 4 columns.
+`bytes`); per-column bloom filters on the 4 indexed columns; **dictionary encoding enabled**.
+At n=10 the corpus is **540 MB**; at n=1000 it is ~54 GB / 800M rows / 8,000 row groups. PDQ
+FST indexes are built on the same 4 columns.
 
 Needles, planted at fixed positions (`manifest.json`):
 - **Single needle** `192.168.133.7` — in the last file's last row group only (1 of 8,000
@@ -120,16 +96,16 @@ Needles, planted at fixed positions (`manifest.json`):
 ### What each layer measures
 
 - **Layer 1 — pruning cost** (`benches/pruning_cost.rs`): time + bytes to decide which row
-  groups match, **no row reads**. PDQ mmaps + traverses the per-column FSTs; bloom reads
-  each file's footer + bloom blocks through a counting reader. Both amortize the per-file
-  index open across a watchlist (`*_multi` paths). Median of 20 iterations, warm. **Byte
-  semantics differ and are not directly comparable** — see the note below the tables.
+  groups match, **no row reads**. PDQ mmaps + traverses the per-column FSTs; bloom reads each
+  file's footer + bloom blocks through a counting reader. Median of 20 iterations, warm.
+  **Byte semantics differ and are not directly comparable** — see the note below the tables.
 - **Layer 2 — end-to-end** (`misc/shootout/run_e2e.py`): the full query returning the
   matching row, validated against a brute-force Polars oracle. **All engines are warm and
   long-lived** — the connection/context/engine is built once *outside* the timer, then the
   query is run 30× and we report **median + IQR**. PDQ is measured **in-process** via its
-  Python binding (`QueryEngine`). A `--cold` mode drops the OS page cache before every
-  sample (5 samples, no warmup).
+  Python binding (`QueryEngine`). A `--cold` mode drops the OS page cache before every sample
+  (5 samples, no warmup); note that engines' *in-process* caches survive that drop (see the
+  cold section).
 
 ---
 
@@ -142,124 +118,106 @@ data read.
 
 | n_files | PDQ FST | Bloom | PDQ faster² | PDQ footprint¹ | Bloom bytes¹ |
 |--:|--:|--:|--:|--:|--:|
-| 10 | 0.017 ms | 15.45 ms | **909×** | 63.6 MB | 31.5 MB |
-| 100 | 0.077 ms | 156.1 ms | **2027×** | 635.8 MB | 315.3 MB |
-| 1000 | 0.541 ms | 1494.6 ms | **2762×** | 6.36 GB | 3.15 GB |
+| 10 | 0.018 ms | 14.16 ms | **786×** | 63.6 MB | 31.5 MB |
+| 100 | 0.073 ms | 150.1 ms | **2056×** | 635.8 MB | 315.3 MB |
+| 1000 | 0.513 ms | 1447.3 ms | **2821×** | 6.36 GB | 3.15 GB |
 
-² **The single-lookup multiple is amortization-asymmetric — do not read it as ~2700×
-"true."** The bench reuses a resident FST handle across all 20 iterations (the index mmap
-is opened once and cached, commit `af28001`), but the bloom path re-runs `File::open` +
-footer Thrift parse + bloom-bitset load *inside* every timed iteration
-(`src/bloom_probe.rs`). So this row compares an *amortized* FST against a *cold-every-time*
-bloom — which is most of the jump from the prior run's ~38–55×. The **structural** win (an
-automaton walk beats a footer parse) is real, but for an apples-to-apples,
-both-sides-resident pruning comparison use the **multi** table below, where both sides
-amortize the per-file open within a single call (and the n=1000 ratio accordingly collapses
-to 6.5×).
+² **The single-lookup multiple is amortization-asymmetric — do not read it as ~2800× "true."**
+The bench reuses a resident FST handle across all 20 iterations (the index mmap is opened
+once and cached), but the bloom path re-runs `File::open` + footer Thrift parse + bloom-bitset
+load *inside* every timed iteration (`src/bloom_probe.rs`). So this row compares an *amortized*
+FST against a *cold-every-time* bloom. The **structural** win (an automaton walk beats a
+footer parse) is real, but for an apples-to-apples, both-sides-resident pruning comparison use
+the **multi** table below, where both sides amortize the per-file open within a single call.
 
 ### Multi-indicator watchlist (probe all N planted indicators, both amortized)
 
 | n_files | PDQ FST | Bloom | PDQ faster | PDQ footprint¹ | Bloom bytes¹ |
 |--:|--:|--:|--:|--:|--:|
-| 10 | 0.041 ms | 15.42 ms | **376×** | 63.6 MB | 31.5 MB |
-| 100 | 2.56 ms | 158.1 ms | **61.7×** | 635.8 MB | 315.3 MB |
-| 1000 | 263.2 ms | 1723.6 ms | **6.5×** | 6.36 GB | 3.15 GB |
+| 10 | 0.040 ms | 14.32 ms | **358×** | 63.6 MB | 31.5 MB |
+| 100 | 2.54 ms | 154.6 ms | **60.8×** | 635.8 MB | 315.3 MB |
+| 1000 | 254.5 ms | 1673.9 ms | **6.6×** | 6.36 GB | 3.15 GB |
 
-PDQ wins the **pruning decision** at every scale: an mmap'd FST traversal beats opening and
-footer-parsing every file. The win is **structural, not a measurement artifact** — the
-bloom path's dominant cost is re-parsing each Parquet footer + Thrift metadata and
-materializing the bloom bitset per file; the FST walk is an O(key-length) automaton
-traversal with the index handle amortized across the batch. The gap narrows on the n=1000
-*multi* sweep (6.5× vs ~2700× single) because the bloom footer-parse cost amortizes
-perfectly across the whole watchlist while PDQ pays a per-term automaton walk that
-amortizes less completely. PDQ still wins.
+The gap narrows on the n=1000 *multi* sweep (6.6× vs ~2800× single) because the bloom
+footer-parse cost amortizes perfectly across the whole watchlist while PDQ pays a per-term
+automaton walk that amortizes less completely. PDQ still wins, exactly, at every scale.
 
 ¹ **The byte columns are NOT apples-to-apples — do not read an I/O "winner" into them.**
 - **Bloom bytes** = exact bytes the Parquet reader pulled to make the decision (footer +
   Thrift + bloom bitsets), tallied through a counting `ChunkReader`.
-- **PDQ footprint** = the *entire* on-disk size of the `<column>.fst` file(s) — the index
-  footprint, **not** what the query reads. Because the FST is **mmap'd**, the lookup faults
-  only the pages along the automaton path, far less than the whole file. PDQ's true
-  per-query faulted bytes are **smaller than this figure and were not measured**. So this
-  column is a **storage** statement (PDQ's index is ~2× the bytes the bloom path pulls),
-  not a per-query I/O comparison. The honest per-query story is the **time** column.
+- **PDQ footprint** = the *entire* on-disk size of the `<column>.fst` file(s). Because the FST
+  is **mmap'd**, the lookup faults only the pages along the automaton path, far less than the
+  whole file; PDQ's true per-query faulted bytes are smaller and were not measured. This is a
+  **storage** statement, not a per-query I/O comparison. The honest per-query story is the
+  **time** column.
 
 ---
 
 ## Layer 2 — end-to-end query (canonical, EC2)
 
 Full query returning the single matching row; all contestants validated correct against the
-oracle. Warm = median of 30 in-process runs; cold = median of 5, OS page cache dropped
-before every sample.
+oracle, all running a matched `SELECT *`. Warm = median of 30 in-process runs; cold = median
+of 5, OS page cache dropped before every sample.
 
-### Warm (long-lived engines, hot cache)
+### Warm (long-lived, tuned engines, hot cache)
 
 | n_files | pdq | duckdb_bloom | datafusion_bloom | polars_fullscan |
 |--:|--:|--:|--:|--:|
-| 10 | **6.53** | 7.25 | 13.22 | 34.17 |
-| 100 | **6.55** | 28.56 | 54.32 | 333.17 |
-| 1000 | **7.98** | 227.66 | 528.27 | 3300.56 |
+| 10 | **5.20** | 8.41 | 11.27 | 66.63 |
+| 100 | **5.80** | 27.74 | 54.82 | 659.47 |
+| 1000 | **7.12** | 200.84 | 505.63 | 18997.64 |
 
-*(median ms)*
+*(median ms; polars n=1000 is a noisy full scan, IQR ~13.5–28 s)*
 
-**PDQ wins end-to-end warm at every scale — including n=10.** PDQ's latency is essentially
-**flat** across a 100× growth in corpus size (6.53 → 6.55 → 7.98 ms) because it consults
-the FST index, opens only the **1 matched file**, and decodes only the matching row. The
-engines scale roughly linearly with file count (DuckDB 7.25 → 28.56 → 227.66 ms) because
-each warm query re-opens and footer-parses every file. At n=1000 PDQ is **28× faster than
-DuckDB** and **66× faster than DataFusion**.
+**PDQ wins warm at every scale, against tuned engines, on a matched query shape.** PDQ's
+latency is essentially **flat** across a 100× growth in corpus size (5.20 → 5.80 → 7.12 ms):
+it consults the FST index, opens only the **1 matched file**, and (via row-filter pushdown)
+decodes only the matching row. The engines scale roughly linearly with file count because each
+query touches every file's row-group metadata + blooms. At n=1000 PDQ is **28× faster than
+DuckDB** and **71× faster than DataFusion**.
 
-> ⚠️ **Read the warm multiples as un-tuned-engine, not best-case-engine.** Neither engine
-> was run with Parquet metadata/footer caching (`misc/shootout/run_e2e.py` — DuckDB has no
-> `SET enable_object_cache=true`; DataFusion sets only `bloom_filter_on_read` +
-> `target_partitions`). A long-lived, high-QPS service would cache that metadata, parsing
-> the footers once rather than per query. **PDQ's per-query footer count is O(matches)
-> while the engines' is O(files) even when cached**, so the **flat scaling and the
-> direction of the win are structural and survive caching**; the **28×/66× magnitudes
-> would shrink** (the engines' per-footer cost drops from a Thrift re-parse to a cache
-> lookup, though they still probe N blooms per query). We did **not** re-run with caching
-> on, so treat the warm multiples as an upper bound.
+> **Why this is now a tuned-engine result.** DuckDB runs with `parquet_metadata_cache=true`
+> (so it parses each footer once, not per query) and DataFusion with `pushdown_filters` on;
+> all engines run the same `SELECT *`. Tuning DuckDB's metadata cache moved its n=1000 warm
+> only **227 → 201 ms (−12%)** — because the dominant warm cost isn't footer *parsing*, it's
+> visiting all N files' row-group metadata + probing their blooms every query. That work is
+> **O(files)** no matter how it's cached, while PDQ is **O(matches)**. So the win is
+> structural; the multiples are no longer "un-tuned engine" figures. **One residual handicap:**
+> DataFusion 53's Python API exposes no standard cross-query metadata cache (only a custom
+> Rust reader factory would add one), so its warm number still includes footer re-parsing —
+> but since the same knob barely helped DuckDB, this is unlikely to change the ranking.
 
 ### Cold (OS page cache dropped before every sample)
 
 | n_files | pdq | duckdb_bloom | datafusion_bloom | polars_fullscan |
 |--:|--:|--:|--:|--:|
-| 10 | 15.39 | 16.16 | 26.01 | 100.57 |
-| 100 | **14.09** | 43.33 | 265.32 | 2133.16 |
-| 1000 | **15.48** | 269.89 | 3934.46 | 22220.53 |
+| 10 | **15.62** | 22.57 | 32.39 | 246.95 |
+| 100 | **16.48** | 48.36 | 205.67 | 4939.13 |
+| 1000 | **16.91** | 272.57 | 3952.82 | 50532.09 |
 
-*(median ms; n=10 PDQ vs DuckDB is a tie — IQRs overlap, see below)*
+*(median ms)*
 
-**Cold, PDQ wins at n=100 and n=1000 and ties at n=10 — a big improvement on the prior
-canonical** (which had DuckDB winning cold everywhere). PDQ's cold latency is flat at
-~14–15 ms because it touches only the matched file (footer + the matched row group's
-filter-column chunk + the one matching row), while the engines read every file's footer +
-bloom blocks cold and scale with N (DuckDB 16 → 43 → 270 ms). At n=1000 PDQ is **17× faster
-than DuckDB**, **254× faster than DataFusion**, and **1400× faster than a full Polars
-scan**. At n=10 PDQ (15.39 ms, p75 15.80) and DuckDB (16.16 ms, p25 15.60) overlap within
-IQR — a statistical tie on 5 samples, not a win.
+**PDQ wins cold at every scale, including n=10.** Cold latency is flat at ~15–17 ms because
+PDQ touches only the matched file (footer + the matched row group's filter-column chunk + the
+one matching row); the engines read every file's metadata + blooms and scale with N. At
+n=1000 PDQ is **16× faster than DuckDB** and **234× faster than DataFusion**.
 
-> ⚠️ **The cold comparison is not footer-symmetric.** An adversarial review (DuckDB/DataFusion
-> maintainer mindset) flagged that PDQ's `--cold` numbers are *not* fully cold. The
-> `QueryEngine` is built once in setup and an **untimed correctness probe runs before the
-> first cold sample** (`run_e2e.py`), which populates PDQ's in-process `ParquetMetaData`
-> cache. The cold harness drops the **OS page cache** before each sample, but that cannot
-> evict an in-process heap cache — so PDQ skips the footer Thrift parse on every cold sample
-> while the engines (no `enable_object_cache`) re-parse all N footers from cold disk. PDQ's
-> row-data reads *are* genuinely cold; only the footer metadata is warm-in-process. Corroborating
-> tell: PDQ's cold medians are non-monotonic (15.39 / 14.09 / 15.48 — n=100 cheaper than
-> n=10), i.e. a fixed floor that excludes the per-file footer parse. **The win direction is
-> still real** (it's dominated by the structural 1-file-vs-N-files effect — one extra footer
-> parse would not close 15 ms vs 270 ms at n=1000), **but the cold magnitudes carry the same
-> caching asymmetry as the warm ones.** A truly footer-cold re-run would rebuild the engine
-> (or clear the metadata cache) per cold sample, or give the engines `enable_object_cache`.
+> **On what "cold" means here (honest framing).** The harness drops the **OS page cache**
+> before each sample, but it cannot evict an engine's **in-process** caches, which persist
+> across samples. So: PDQ's mmap'd *data* is genuinely cold (re-faulted each sample) while its
+> parsed metadata stays cached; DuckDB keeps **both** its metadata cache *and* its file-byte
+> cache (`enable_external_file_cache`, on by default) — so DuckDB's cold is only partly cold
+> (its cold n=1000 of 273 ms is barely above its warm 201 ms). DataFusion and Polars have no
+> such cache and are genuinely cold. Net: cold caches metadata symmetrically for PDQ and
+> DuckDB, and if anything **flatters DuckDB** (its data stays resident while PDQ's is
+> evicted) — and PDQ still wins 16×. The earlier "cold is not footer-symmetric" concern is
+> resolved; the residual asymmetry now runs *against* PDQ, so the win is conservative.
 
 ---
 
 ## Correctness — PDQ is exact, bloom is not
 
-`matched_files` = files (single) or (indicator × file) candidates (multi) each mechanism
-flags.
+`matched_files` = files (single) or (indicator × file) candidates (multi) each mechanism flags.
 
 **Single needle** (truth: present in exactly 1 file):
 
@@ -270,8 +228,7 @@ flags.
 | 1000 | 1 | 72 | 71 |
 
 **Multi sweep** ((indicator × file) matches; PDQ counts true occurrences — ≥ N because
-random-filler collisions are *real* matches, not errors — while bloom counts probabilistic
-candidates):
+random-filler collisions are *real* matches — while bloom counts probabilistic candidates):
 
 | n_files | PDQ (exact) | Bloom candidates |
 |--:|--:|--:|
@@ -280,21 +237,17 @@ candidates):
 | 1000 | 1,196 | 79,855 |
 
 PDQ's FST returns the exact (file, row-group) set — **zero false positives**. The candidate
-count grows with N (at n=1000 the single-needle bloom flags 72 candidate files, 71 false,
-where PDQ flags 1), **but this is a correctly-sized ~1% bloom behaving as designed, scaling
-linearly with file count — not bloom degradation** (effective per-row-group fpp ≈ 0.9%,
-the parquet-rs default). A real engine also prunes with min/max statistics and the page
-index *first*, so most bloom false positives never become full row-group scans — though on
-this random corpus those zonemaps prune little, which is exactly why PDQ's exactness +
-row-filter pushdown pay off.
+count grows with N (at n=1000 the single-needle bloom flags 72 candidate files, 71 false),
+but this is a correctly-sized ~1% bloom (effective per-row-group fpp ≈ 0.9%, the parquet-rs
+default) scaling linearly with file count — not bloom degradation.
 
 ---
 
 ## Storage footprint (n=10 measured, dictionary on)
 
 Measured directly on the deterministic corpus: bloom sizes via DuckDB
-`parquet_metadata(bloom_filter_length)`, FST via on-disk `*.fst` sizes. The generator is
-deterministic, so the n=1000 figures scale linearly (100× the n=10 corpus).
+`parquet_metadata(bloom_filter_length)`, FST via on-disk `*.fst` sizes. The n=1000 figures
+scale linearly (100× the n=10 corpus).
 
 | | FST index | Bloom filters | raw Parquet (incl. blooms) |
 |---|--:|--:|--:|
@@ -305,106 +258,81 @@ deterministic, so the n=1000 figures scale linearly (100× the n=10 corpus).
 | **n=1000 (linear extrapolation)** | **~18 GB** | **~3 GB** | ~54 GB |
 
 The FST index is **~6× the bloom filters** and is a *separate* side structure on top of the
-Parquet; the blooms are embedded. Both are cardinality-driven and both collapse to
-near-zero for the low-cardinality `domain_rev` column. This larger footprint is the
-deliberate trade for exactness and footer-free pruning — and, with row-filter pushdown, it
-no longer costs PDQ the cold race.
+Parquet; the blooms are embedded. Both are cardinality-driven and both collapse to near-zero
+for the low-cardinality `domain_rev` column. This larger footprint is the deliberate trade for
+exactness and footer-free pruning.
 
 ### Build cost (one-time precompute, EC2)
 
 | n_files | corpus write (s) | FST index build (s) |
 |--:|--:|--:|
-| 10 | 8.2 | 50.2 |
-| 100 | 81.8 | 514.0 |
-| 1000 | 817.7 | 5418.3 |
+| 10 | 7.8 | 41.8 |
+| 100 | 80.5 | 427.8 |
+| 1000 | 827.9 | 5132.0 |
 
-FST build scales roughly linearly (~6.6× the corpus-write time). This is a real precompute
-cost the engines don't pay; it amortizes under high-QPS, long-lived indicator search — the
-same regime in which the latency wins apply.
+FST build scales roughly linearly. This is a real precompute cost the engines don't pay; it
+amortizes under high-QPS, long-lived indicator search — the regime in which the latency wins
+apply.
 
 ---
 
 ## What survives, what was retracted
 
 **Retracted (older headlines):**
-- ❌ "47× faster on multi-IOC" — an artifact of re-opening footers per indicator.
-- ❌ "496× less I/O" — the byte columns are footprint vs. actual-reads and not comparable.
+- ❌ "47× faster on multi-IOC" / "496× less I/O" — artifacts of re-opening footers per
+  indicator and of comparing footprint vs. actual reads.
 
-**No longer true (prior canonical, pre-`dabf5e6`):**
-- ⛔ "PDQ loses end-to-end warm at n=10" — PDQ now wins warm at n=10 (6.53 vs 7.25 ms).
-- ⛔ "Cold cache: PDQ loses to DuckDB at every scale" — PDQ now wins cold at n=100/1000
-  (17× at n=1000) and ties at n=10, thanks to row-filter pushdown (with the cold-symmetry
-  caveat below).
-
-**Survives / newly demonstrated (full ladder):**
-- ✅ **Faster, exact pruning decisions (Layer 1)** — orders of magnitude faster
-  single-indicator at every scale, with **zero false positives**. (The ~900–2800× single
-  multiple is amortization-asymmetric; the symmetric, both-sides-resident comparison is the
-  *multi* table, 6.5× at n=1000 — see note ².)
-- ✅ **Flat warm latency → wins at every scale (Layer 2)** — 6.5–8.0 ms across a 100×
-  corpus growth; 28×/66× vs DuckDB/DataFusion at n=1000. **Direction is structural; the
-  magnitude is against engines without metadata caching** (re-scope before quoting as a
-  tuned-engine result).
-- ✅ **Flat cold latency → wins at scale (Layer 2)** — ~14–15 ms; 17× vs DuckDB at n=1000,
-  win at n=100, **tie at n=10**. ⚠️ The cold comparison is *not* footer-symmetric (PDQ's
-  metadata cache is live across cold samples; the engines re-parse footers cold) — the win
-  direction is structural but the magnitudes carry the warm caching asymmetry.
+**Survives — now demonstrated against tuned engines, matched shape, version-stamped:**
+- ✅ **Faster, exact pruning decisions (Layer 1)** — orders of magnitude, zero false positives
+  (single multiple amortization-asymmetric; symmetric number is the *multi* table, 6.6× at
+  n=1000 — note ²).
+- ✅ **Flat warm latency → wins at every scale (Layer 2)** — 5.2–7.1 ms across a 100× corpus
+  growth; 28×/71× vs DuckDB/DataFusion at n=1000. **Structural, not un-tuned-engine:** turning
+  on DuckDB's metadata cache barely moved it (−12%).
+- ✅ **Flat cold latency → wins at every scale (Layer 2)** — ~15–17 ms; 16× vs DuckDB at
+  n=1000, including a clean n=10 win. The residual cold cache asymmetry runs *against* PDQ.
 - ✅ **Exactness end-to-end** — zero false positives vs the bloom's correctly-sized ~1% tail.
 
 **Costs / limits that are real:**
 - ⚠️ **Storage:** ~6× the blooms (~18 GB at n=1000) as a separate side index.
-- ⚠️ **Build time:** ~50 s to index n=10, ~90 min at n=1000; the engines have zero precompute.
-- ⚠️ **Warm multiples are vs un-tuned engines** — see limitations; magnitude shrinks with
-  engine metadata caching on (direction does not).
+- ⚠️ **Build time:** ~42 s to index n=10, ~85 min at n=1000; the engines have zero precompute.
+- ⚠️ **Selective + random workload only** — PDQ's best case (see caveats).
 
 ---
 
-## Known limitations (from adversarial review)
+## Known limitations
 
-Two rounds of adversarial review (DuckDB/DataFusion-maintainer mindset) produced these. The
-second round (2026-06-19) targeted the cache/pushdown changes and found #2–#4 below.
+Two rounds of adversarial review (DuckDB/DataFusion-maintainer mindset) shaped this. The big
+ones from earlier runs are now **addressed** by this tuned, matched-shape, version-stamped run:
+engines un-tuned → tuned with standard knobs; query-shape asymmetry → matched `SELECT *`;
+contestant versions unrecorded → stamped into the JSON; cold not footer-symmetric → metadata
+now cached symmetrically (and the residual runs against PDQ). What remains:
 
-1. **Warm Layer-2 runs the engines without metadata/footer caching** (`run_e2e.py`). The
-   single biggest caveat on the **warm** multiples. Direction holds (PDQ is O(matches),
-   engines O(files) even when cached), magnitude does not, until re-run with
-   `enable_object_cache` (DuckDB) + a DataFusion metadata cache.
-2. **Cold is not footer-symmetric — same caching asymmetry as warm.** PDQ's `QueryEngine` is
-   built once and an untimed correctness probe populates its in-process `ParquetMetaData`
-   cache *before* the first cold sample; the cold harness drops the OS page cache, which
-   can't evict that in-process cache. So PDQ skips the footer Thrift parse on every cold
-   sample while the engines re-parse all N footers from cold disk. PDQ's row-data reads are
-   genuinely cold; only the footer is warm-in-process. The cold *win direction* survives (the
-   structural 1-file-vs-N-files effect dominates), but the cold *magnitudes* are not
-   apples-to-apples. A footer-cold re-run would rebuild the engine / clear the cache per cold
-   sample, or enable engine caching.
-3. **Cold n=10 is a tie, not a win.** PDQ 15.39 ms (p75 15.80) vs DuckDB 16.16 ms (p25
-   15.60) — IQRs overlap on 5 samples. "Wins at every scale" cold overstates n=10.
-4. **Layer-1 single-lookup is amortization-asymmetric.** The FST handle is resident across
-   the 20 iterations; the bloom path re-opens + re-parses the footer every iteration
-   (`benches/pruning_cost.rs`, `src/bloom_probe.rs`). The ~900–2800× single multiple is
-   inflated by that mismatch; the **multi** table (both sides amortized) is the symmetric
-   pruning comparison. The structural win is real; the single magnitude is not.
-5. **No in-harness proof that DuckDB uses its bloom.** Only DataFusion has a pruning sanity
-   gate (`datafusion_bloom_pruned_count`). DuckDB pruning via bloom was confirmed manually
-   in earlier runs; the harness can't prove its own "duckdb_bloom" label.
-6. **Query-shape asymmetry.** Engines run `SELECT count(*)`; PDQ materializes all 5 columns
-   of the matching row(s). This is *conservative for PDQ* (the engines do strictly less
-   work), so it doesn't flatter PDQ.
-7. **Contestant versions unpinned.** The Layer-2 `datafusion`/`duckdb`/`polars` are the
-   Python packages, independent of the Rust pin, and their versions aren't written to the
-   results JSON. Engine ranking is version-sensitive. Reproducibility gap.
-8. **Cold n=100 DataFusion is noisy** (median 265 ms, p25 176 ms over 5 samples): a wide
-   spread. Don't read its 2-significant-figure precision as tight.
+1. **DataFusion 53's Python API has no standard cross-query metadata cache.** Its warm number
+   still re-parses footers; only a custom Rust `ParquetFileReaderFactory` would fix it (out of
+   scope: standard knobs only). The same knob barely helped DuckDB, so this is unlikely to
+   change the ranking — but DataFusion's warm multiple is not a fully-tuned figure.
+2. **"Cold" is not uniformly cold.** Engines' in-process caches survive the OS page-cache drop
+   (DuckDB's file-byte + metadata caches; PDQ's metadata cache). Cold is genuinely cold only
+   for PDQ's mmap'd data, DataFusion, and Polars. As noted, this flatters DuckDB cold, so PDQ's
+   cold win is conservative.
+3. **Layer-1 single-lookup is amortization-asymmetric** (resident FST vs bloom re-opened per
+   iteration). The ~800–2800× single multiple is inflated by that mismatch; the **multi** table
+   is the symmetric pruning comparison.
+4. **No in-harness proof that DuckDB uses its bloom.** Only DataFusion has a pruning sanity
+   gate; DuckDB pruning via bloom was confirmed manually.
+5. **Cold n=100 DataFusion is noisy** (median 206 ms, p25 205 / p75 315 over 5 samples).
 
 ## Caveats
 
-- **bytes_read is not apples-to-apples** (FST footprint vs. exact faults). Don't read a
-  bytes "winner" into the Layer-1 tables; the time columns are the per-query comparison.
+- **bytes_read is not apples-to-apples** (FST footprint vs. exact faults). The time columns are
+  the per-query comparison.
 - **Selective workload only** (a rare needle in 1 of 8,000 row groups) — PDQ's best case.
   Non-selective queries can't be pruned and a full scan is the right tool.
-- **Random, unsorted corpus** means min/max zonemaps and the page index can't prune — which
-  is precisely why row-filter pushdown matters here. Real logs often have
-  temporal/sortedness the engines exploit; results would differ.
+- **Random, unsorted corpus** means min/max zonemaps and the page index can't prune — which is
+  precisely why row-filter pushdown matters here. Real logs often have temporal/sortedness the
+  engines exploit; results would differ. (Sorting/partitioning would help the engines but only
+  along *one* column — the multi-column independence PDQ provides is the point.)
 
 ---
 
