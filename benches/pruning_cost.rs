@@ -5,7 +5,7 @@
 //! Emits misc/shootout/results/pruning_cost.json
 
 use pdq::IndexQueryEngine;
-use pdq::bloom_probe::{fst_index_bytes, probe_bloom};
+use pdq::bloom_probe::{fst_index_bytes, probe_bloom, probe_blooms_multi};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -127,15 +127,12 @@ fn main() {
             .collect();
 
         let engine2 = IndexQueryEngine::new(&index_dir);
-        let iocs_c = iocs.clone();
+        let iocs_ref: Vec<&str> = iocs.iter().map(String::as_str).collect();
         let col_c = column.clone();
         let mut m_files = 0usize;
         let ms = time_it(|| {
-            let mut hits = 0usize;
-            for v in &iocs_c {
-                hits += engine2.exact_search(&col_c, v).unwrap().len();
-            }
-            m_files = hits;
+            // Watchlist lookup: amortize the index open across all indicators.
+            m_files = engine2.exact_search_multi(&col_c, &iocs_ref).unwrap();
         });
         rows.push(Row {
             n_files: n,
@@ -147,21 +144,18 @@ fn main() {
         });
 
         let files_c = files.clone();
-        let iocs_c = iocs.clone();
+        let iocs_ref: Vec<&str> = iocs.iter().map(String::as_str).collect();
         let col_c = column.clone();
         let mut mb_bytes = 0u64;
         let mut mb_files = 0usize;
         let ms = time_it(|| {
             let mut b = 0u64;
             let mut hits = 0usize;
+            // Open each file's footer + blooms once, probe the whole watchlist.
             for f in &files_c {
-                for v in &iocs_c {
-                    let (rgs, bytes) = probe_bloom(f, &col_c, v).unwrap();
-                    b += bytes;
-                    if !rgs.is_empty() {
-                        hits += 1;
-                    }
-                }
+                let (h, bytes) = probe_blooms_multi(f, &col_c, &iocs_ref).unwrap();
+                b += bytes;
+                hits += h;
             }
             mb_bytes = b;
             mb_files = hits;

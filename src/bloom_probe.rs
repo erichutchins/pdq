@@ -99,6 +99,49 @@ pub fn probe_bloom(path: &Path, column: &str, value: &str) -> Result<(Vec<usize>
     Ok((matched, counter.load(Ordering::Relaxed)))
 }
 
+/// Screen a watchlist of `values` against one file's bloom filters, opening the
+/// file and faulting each row group's bloom **exactly once** and probing every
+/// value against the resident bitset (the way any real engine screens an
+/// `IN (...)` / multi-indicator predicate). Returns (number of values that
+/// matched at least one row group, bytes read for this file — independent of
+/// the number of values). Contrast with calling `probe_bloom` in a loop, which
+/// re-opens and re-parses the footer per value and so inflates I/O by `N×`.
+pub fn probe_blooms_multi(path: &Path, column: &str, values: &[&str]) -> Result<(usize, u64)> {
+    let reader = CountingReader::new(path)?;
+    let counter = reader.bytes.clone();
+    let options = ReadOptionsBuilder::new()
+        .with_reader_properties(
+            ReaderProperties::builder()
+                .set_read_bloom_filter(true)
+                .build(),
+        )
+        .build();
+    let file_reader = SerializedFileReader::new_with_options(reader, options)?;
+    let meta = file_reader.metadata();
+    let col_idx = meta
+        .file_metadata()
+        .schema_descr()
+        .columns()
+        .iter()
+        .position(|c| c.name() == column)
+        .ok_or_else(|| anyhow::anyhow!("column {column} not found"))?;
+
+    let mut hit = vec![false; values.len()];
+    for rg in 0..meta.num_row_groups() {
+        let rg_reader = file_reader.get_row_group(rg)?;
+        // Fault this row group's bloom once, then probe every value in memory.
+        if let Some(sbbf) = rg_reader.get_column_bloom_filter(col_idx) {
+            for (i, v) in values.iter().enumerate() {
+                if !hit[i] && sbbf.check(v) {
+                    hit[i] = true;
+                }
+            }
+        }
+    }
+    let hits = hit.iter().filter(|&&h| h).count();
+    Ok((hits, counter.load(Ordering::Relaxed)))
+}
+
 /// Total on-disk size of all `<column>.fst` files PDQ must consult — the
 /// FST footprint scanned to make the pruning decision.
 pub fn fst_index_bytes(index_dir: &Path, column: &str) -> Result<u64> {

@@ -69,8 +69,13 @@ fn reverse_domain(domain: &str) -> String {
 }
 
 fn writer_props(rows_per_group: usize) -> WriterProperties {
+    // Dictionary encoding ON to mirror real log corpora: parquet-rs uses the
+    // dictionary until it exceeds the page-size limit, then falls back to PLAIN
+    // per column — so high-cardinality columns (IP/email) largely stay PLAIN
+    // while low-cardinality ones (domain_rev) compress. This is the realistic
+    // baseline the engines would see in production.
     let mut builder = WriterProperties::builder()
-        .set_dictionary_enabled(false)
+        .set_dictionary_enabled(true)
         .set_max_row_group_row_count(Some(rows_per_group));
     for col in BLOOM_COLUMNS {
         builder = builder.set_column_bloom_filter_enabled(ColumnPath::from(*col), true);

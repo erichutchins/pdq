@@ -1,20 +1,12 @@
 #!/usr/bin/env bash
-# Cold-cache Layer-2 run. macOS: needs `sudo purge`. Linux: drop_caches.
+# Cold-cache Layer-2 run. run_e2e.py --cold drops the OS page cache before EVERY
+# timed sample itself (macOS `purge`, Linux drop_caches — both need sudo), so each
+# sample is genuinely cold rather than just the first. Runs in the PROJECT venv so
+# the in-process `pdq` module (built via `maturin develop`) is importable.
 # Usage: misc/shootout/run_cold.sh [ladder]
 set -euo pipefail
 LADDER="${1:-10,100,1000}"
 
-purge_cache() {
-  if command -v purge >/dev/null 2>&1; then
-    sync && sudo purge
-  elif [ -w /proc/sys/vm/drop_caches ] || sudo -n true 2>/dev/null; then
-    sync && echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
-  else
-    echo "WARN: cannot purge cache; results are warm" >&2
-  fi
-}
-
-purge_cache
-uv run --with duckdb --with datafusion --with polars --with pyarrow \
-  misc/shootout/run_e2e.py --ladder "$LADDER" \
+uv run --group bench python misc/shootout/run_e2e.py \
+  --ladder "$LADDER" --cold \
   --out misc/shootout/results/e2e_cold.json
