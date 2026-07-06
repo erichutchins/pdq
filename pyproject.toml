@@ -33,6 +33,17 @@ dev = [
     "ruff>=0.12.1",
     "uv>=0.7.17",
 ]
+# Shootout benchmark deps (Layer-2 contestants + report rendering). The Layer-2
+# harness imports `pdq` in-process, so it must run in this project venv after
+# `uv run --group bench maturin develop`; `maturin` is included here for that.
+bench = [
+    "maturin>=1.9.4,<2.0",
+    "duckdb>=1.1.0",
+    "datafusion>=43.0.0",
+    "polars>=0.20.4",
+    "pyarrow>=22.0.0",
+    "matplotlib>=3.8",
+]
 
 [project.optional-dependencies]
 # Users can pick their preferred dataframe backend
