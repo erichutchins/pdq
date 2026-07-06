@@ -1,0 +1,98 @@
+[
+  {
+    "n_files": 10,
+    "mechanism": "pdq_fst",
+    "workload": "single",
+    "median_ms": 0.017886000000000003,
+    "bytes_read": 63550799,
+    "matched_files": 1
+  },
+  {
+    "n_files": 10,
+    "mechanism": "bloom",
+    "workload": "single",
+    "median_ms": 14.156985,
+    "bytes_read": 31534700,
+    "matched_files": 4
+  },
+  {
+    "n_files": 10,
+    "mechanism": "pdq_fst",
+    "workload": "multi",
+    "median_ms": 0.039912,
+    "bytes_read": 63550799,
+    "matched_files": 10
+  },
+  {
+    "n_files": 10,
+    "mechanism": "bloom",
+    "workload": "multi",
+    "median_ms": 14.321136,
+    "bytes_read": 31534700,
+    "matched_files": 17
+  },
+  {
+    "n_files": 100,
+    "mechanism": "pdq_fst",
+    "workload": "single",
+    "median_ms": 0.072598,
+    "bytes_read": 635777026,
+    "matched_files": 1
+  },
+  {
+    "n_files": 100,
+    "mechanism": "bloom",
+    "workload": "single",
+    "median_ms": 150.107457,
+    "bytes_read": 315346795,
+    "matched_files": 12
+  },
+  {
+    "n_files": 100,
+    "mechanism": "pdq_fst",
+    "workload": "multi",
+    "median_ms": 2.542172,
+    "bytes_read": 635777026,
+    "matched_files": 100
+  },
+  {
+    "n_files": 100,
+    "mechanism": "bloom",
+    "workload": "multi",
+    "median_ms": 154.639944,
+    "bytes_read": 315346795,
+    "matched_files": 847
+  },
+  {
+    "n_files": 1000,
+    "mechanism": "pdq_fst",
+    "workload": "single",
+    "median_ms": 0.5125909999999999,
+    "bytes_read": 6356943791,
+    "matched_files": 1
+  },
+  {
+    "n_files": 1000,
+    "mechanism": "bloom",
+    "workload": "single",
+    "median_ms": 1447.331993,
+    "bytes_read": 3153467148,
+    "matched_files": 72
+  },
+  {
+    "n_files": 1000,
+    "mechanism": "pdq_fst",
+    "workload": "multi",
+    "median_ms": 254.48387,
+    "bytes_read": 6356943791,
+    "matched_files": 1196
+  },
+  {
+    "n_files": 1000,
+    "mechanism": "bloom",
+    "workload": "multi",
+    "median_ms": 1673.895921,
+    "bytes_read": 3153467148,
+    "matched_files": 79855
+  }
+]

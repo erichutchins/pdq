@@ -1,0 +1,35 @@
+[
+  {
+    "corpus_write_seconds": 7.8331805320000285,
+    "index_build_per_column_seconds": {
+      "src_ip": 12.755877717999965,
+      "dst_ip": 12.732968933999928,
+      "domain_rev": 1.3448308009999437,
+      "email": 14.922364060999826
+    },
+    "index_build_seconds": 41.75604151399966,
+    "n_files": 10
+  },
+  {
+    "corpus_write_seconds": 80.52153390900003,
+    "index_build_per_column_seconds": {
+      "src_ip": 137.1146419879999,
+      "dst_ip": 127.57252141599997,
+      "domain_rev": 13.009067783000091,
+      "email": 150.08827645399992
+    },
+    "index_build_seconds": 427.7845076409999,
+    "n_files": 100
+  },
+  {
+    "corpus_write_seconds": 827.8679995209998,
+    "index_build_per_column_seconds": {
+      "src_ip": 1671.385515512,
+      "dst_ip": 1458.2420658369997,
+      "domain_rev": 194.0180559800001,
+      "email": 1808.3831121599997
+    },
+    "index_build_seconds": 5132.028749489,
+    "n_files": 1000
+  }
+]

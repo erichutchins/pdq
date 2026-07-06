@@ -40,7 +40,7 @@ async def main():
             # print("No matches found")
             pass
             
-    except Exception as e:
+    except Exception:
         # print(f"Error: {e}")
         sys.exit(1)
 

@@ -32,7 +32,7 @@ def main():
         # print(f"Found {count} records")
         if count == 0:
             sys.exit(0)
-    except Exception as e:
+    except Exception:
         # print(f"Error: {e}")
         sys.exit(1)
 
