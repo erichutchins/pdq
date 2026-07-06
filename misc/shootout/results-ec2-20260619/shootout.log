@@ -1,0 +1,1585 @@
+==> [1/8] Mount NVMe instance store at /data
+    formatting /dev/nvme1n1 (ext4) and mounting at /data
+mke2fs 1.47.0 (5-Feb-2023)
+Discarding device blocks:         0/228759765 36175872/228759765119537664/228759765202899456/228759765                   done                            
+Creating filesystem with 228759765 4k blocks and 57196544 inodes
+Filesystem UUID: 11b11069-7e87-4a58-b516-223c0b532976
+Superblock backups stored on blocks: 
+	32768, 98304, 163840, 229376, 294912, 819200, 884736, 1605632, 2654208, 
+	4096000, 7962624, 11239424, 20480000, 23887872, 71663616, 78675968, 
+	102400000, 214990848
+
+Allocating group tables:    0/6982         done                            
+Writing inode tables:    0/6982         done                            
+Creating journal (262144 blocks): done
+Writing superblocks and filesystem accounting information:    0/6982         done
+
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme1n1    858G   28K  815G   1% /data
+==> [2/8] Install OS build deps
+Hit:1 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble InRelease
+Get:2 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
+Get:3 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-backports InRelease [126 kB]
+Get:4 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/universe amd64 Packages [15.0 MB]
+Get:5 http://security.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+Get:6 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/universe Translation-en [5982 kB]
+Get:7 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages [779 kB]
+Get:8 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/universe amd64 Components [3871 kB]
+Get:9 http://security.ubuntu.com/ubuntu noble-security/main Translation-en [178 kB]
+Get:10 http://security.ubuntu.com/ubuntu noble-security/main amd64 Components [44.8 kB]
+Get:11 http://security.ubuntu.com/ubuntu noble-security/main amd64 c-n-f Metadata [11.5 kB]
+Get:12 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/universe amd64 c-n-f Metadata [301 kB]
+Get:13 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/multiverse amd64 Packages [269 kB]
+Get:14 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/multiverse Translation-en [118 kB]
+Get:15 http://security.ubuntu.com/ubuntu noble-security/universe amd64 Packages [1170 kB]
+Get:16 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/multiverse amd64 Components [35.0 kB]
+Get:17 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/multiverse amd64 c-n-f Metadata [8328 B]
+Get:18 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1031 kB]
+Get:19 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main Translation-en [259 kB]
+Get:20 http://security.ubuntu.com/ubuntu noble-security/universe Translation-en [229 kB]
+Get:21 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 Components [181 kB]
+Get:22 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 c-n-f Metadata [17.4 kB]
+Get:23 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [1656 kB]
+Get:24 http://security.ubuntu.com/ubuntu noble-security/universe amd64 Components [76.4 kB]
+Get:25 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/universe Translation-en [326 kB]
+Get:26 http://security.ubuntu.com/ubuntu noble-security/universe amd64 c-n-f Metadata [24.1 kB]
+Get:27 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Components [388 kB]
+Get:28 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/universe amd64 c-n-f Metadata [34.8 kB]
+Get:29 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Packages [1110 kB]
+Get:30 http://security.ubuntu.com/ubuntu noble-security/restricted amd64 Packages [1048 kB]
+Get:31 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/restricted Translation-en [251 kB]
+Get:32 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 Packages [40.4 kB]
+Get:33 http://security.ubuntu.com/ubuntu noble-security/restricted Translation-en [238 kB]
+Get:34 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/multiverse Translation-en [9972 B]
+Get:35 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 Components [940 B]
+Get:36 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 Packages [35.3 kB]
+Get:37 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 c-n-f Metadata [656 B]
+Get:38 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-backports/main amd64 Packages [40.6 kB]
+Get:39 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-backports/main Translation-en [9172 B]
+Get:40 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-backports/main amd64 Components [5760 B]
+Get:41 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-backports/main amd64 c-n-f Metadata [368 B]
+Get:42 http://security.ubuntu.com/ubuntu noble-security/multiverse Translation-en [8308 B]
+Get:43 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-backports/universe amd64 Packages [31.0 kB]
+Get:44 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-backports/universe Translation-en [18.6 kB]
+Get:45 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-backports/universe amd64 Components [10.5 kB]
+Get:46 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-backports/universe amd64 c-n-f Metadata [1588 B]
+Get:47 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 Components [208 B]
+Get:48 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-backports/restricted amd64 Components [212 B]
+Get:49 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-backports/restricted amd64 c-n-f Metadata [116 B]
+Get:50 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-backports/multiverse amd64 Packages [748 B]
+Get:51 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-backports/multiverse Translation-en [340 B]
+Get:52 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-backports/multiverse amd64 Components [212 B]
+Get:53 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-backports/multiverse amd64 c-n-f Metadata [116 B]
+Get:54 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 c-n-f Metadata [468 B]
+Fetched 35.3 MB in 4s (9322 kB/s)
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+git is already the newest version (1:2.43.0-1ubuntu7.3).
+git set to manually installed.
+curl is already the newest version (8.5.0-2ubuntu10.9).
+curl set to manually installed.
+tmux is already the newest version (3.4-1ubuntu0.1).
+tmux set to manually installed.
+The following additional packages will be installed:
+  binutils binutils-common binutils-x86-64-linux-gnu bzip2 cpp cpp-13
+  cpp-13-x86-64-linux-gnu cpp-x86-64-linux-gnu dpkg-dev fakeroot
+  fontconfig-config fonts-dejavu-core fonts-dejavu-mono g++ g++-13
+  g++-13-x86-64-linux-gnu g++-x86-64-linux-gnu gcc gcc-13 gcc-13-base
+  gcc-13-x86-64-linux-gnu gcc-x86-64-linux-gnu javascript-common
+  libalgorithm-diff-perl libalgorithm-diff-xs-perl libalgorithm-merge-perl
+  libaom3 libasan8 libatomic1 libbinutils libc-dev-bin libc-devtools libc6-dev
+  libcc1-0 libcrypt-dev libctf-nobfd0 libctf0 libdeflate0 libdpkg-perl
+  libexpat1-dev libfakeroot libfile-fcntllock-perl libfontconfig1
+  libgcc-13-dev libgd3 libgomp1 libgprofng0 libheif-plugin-aomdec
+  libheif-plugin-aomenc libheif1 libhwasan0 libisl23 libitm1 libjbig0
+  libjpeg-turbo8 libjpeg8 libjs-jquery libjs-sphinxdoc libjs-underscore
+  liblerc4 liblsan0 libmpc3 libpkgconf3 libpython3-dev libpython3.12-dev
+  libquadmath0 libsframe1 libsharpyuv0 libstdc++-13-dev libtiff6 libtsan2
+  libubsan1 libwebp7 libxpm4 linux-libc-dev lto-disabled-list make
+  manpages-dev pkgconf pkgconf-bin python3.12-dev rpcsvc-proto zlib1g-dev
+Suggested packages:
+  binutils-doc gprofng-gui bzip2-doc cpp-doc gcc-13-locales cpp-13-doc
+  debian-keyring g++-multilib g++-13-multilib gcc-13-doc gcc-multilib autoconf
+  automake libtool flex bison gdb gcc-doc gcc-13-multilib gdb-x86-64-linux-gnu
+  apache2 | lighttpd | httpd glibc-doc bzr libgd-tools libheif-plugin-libde265
+  libheif-plugin-x265 libheif-plugin-ffmpegdec libheif-plugin-jpegdec
+  libheif-plugin-jpegenc libheif-plugin-j2kdec libheif-plugin-j2kenc
+  libheif-plugin-rav1e libheif-plugin-svtenc libssl-doc libstdc++-13-doc
+  make-doc
+The following NEW packages will be installed:
+  binutils binutils-common binutils-x86-64-linux-gnu build-essential bzip2 cpp
+  cpp-13 cpp-13-x86-64-linux-gnu cpp-x86-64-linux-gnu dpkg-dev fakeroot
+  fontconfig-config fonts-dejavu-core fonts-dejavu-mono g++ g++-13
+  g++-13-x86-64-linux-gnu g++-x86-64-linux-gnu gcc gcc-13 gcc-13-base
+  gcc-13-x86-64-linux-gnu gcc-x86-64-linux-gnu javascript-common
+  libalgorithm-diff-perl libalgorithm-diff-xs-perl libalgorithm-merge-perl
+  libaom3 libasan8 libatomic1 libbinutils libc-dev-bin libc-devtools libc6-dev
+  libcc1-0 libcrypt-dev libctf-nobfd0 libctf0 libdeflate0 libdpkg-perl
+  libexpat1-dev libfakeroot libfile-fcntllock-perl libfontconfig1
+  libgcc-13-dev libgd3 libgomp1 libgprofng0 libheif-plugin-aomdec
+  libheif-plugin-aomenc libheif1 libhwasan0 libisl23 libitm1 libjbig0
+  libjpeg-turbo8 libjpeg8 libjs-jquery libjs-sphinxdoc libjs-underscore
+  liblerc4 liblsan0 libmpc3 libpkgconf3 libpython3-dev libpython3.12-dev
+  libquadmath0 libsframe1 libsharpyuv0 libssl-dev libstdc++-13-dev libtiff6
+  libtsan2 libubsan1 libwebp7 libxpm4 linux-libc-dev lto-disabled-list make
+  manpages-dev pkg-config pkgconf pkgconf-bin python3-dev python3.12-dev
+  rpcsvc-proto zlib1g-dev
+0 upgraded, 87 newly installed, 0 to remove and 9 not upgraded.
+Need to get 87.8 MB of archives.
+After this operation, 315 MB of additional disk space will be used.
+Get:1 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 binutils-common amd64 2.42-4ubuntu2.10 [240 kB]
+Get:2 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libsframe1 amd64 2.42-4ubuntu2.10 [15.7 kB]
+Get:3 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libbinutils amd64 2.42-4ubuntu2.10 [577 kB]
+Get:4 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libctf-nobfd0 amd64 2.42-4ubuntu2.10 [98.0 kB]
+Get:5 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libctf0 amd64 2.42-4ubuntu2.10 [94.5 kB]
+Get:6 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libgprofng0 amd64 2.42-4ubuntu2.10 [849 kB]
+Get:7 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 binutils-x86-64-linux-gnu amd64 2.42-4ubuntu2.10 [2463 kB]
+Get:8 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 binutils amd64 2.42-4ubuntu2.10 [18.2 kB]
+Get:9 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libc-dev-bin amd64 2.39-0ubuntu8.7 [20.4 kB]
+Get:10 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 linux-libc-dev amd64 6.8.0-124.124 [1442 kB]
+Get:11 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libcrypt-dev amd64 1:4.4.36-4build1 [112 kB]
+Get:12 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 rpcsvc-proto amd64 1.4.2-0ubuntu7 [67.4 kB]
+Get:13 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libc6-dev amd64 2.39-0ubuntu8.7 [2124 kB]
+Get:14 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 gcc-13-base amd64 13.3.0-6ubuntu2~24.04.1 [51.6 kB]
+Get:15 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libisl23 amd64 0.26-3build1.1 [680 kB]
+Get:16 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libmpc3 amd64 1.3.1-1build1.1 [54.6 kB]
+Get:17 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 cpp-13-x86-64-linux-gnu amd64 13.3.0-6ubuntu2~24.04.1 [10.7 MB]
+Get:18 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 cpp-13 amd64 13.3.0-6ubuntu2~24.04.1 [1042 B]
+Get:19 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 cpp-x86-64-linux-gnu amd64 4:13.2.0-7ubuntu1 [5326 B]
+Get:20 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 cpp amd64 4:13.2.0-7ubuntu1 [22.4 kB]
+Get:21 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libcc1-0 amd64 14.2.0-4ubuntu2~24.04.1 [48.0 kB]
+Get:22 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libgomp1 amd64 14.2.0-4ubuntu2~24.04.1 [148 kB]
+Get:23 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libitm1 amd64 14.2.0-4ubuntu2~24.04.1 [29.7 kB]
+Get:24 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libatomic1 amd64 14.2.0-4ubuntu2~24.04.1 [10.5 kB]
+Get:25 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libasan8 amd64 14.2.0-4ubuntu2~24.04.1 [3027 kB]
+Get:26 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 liblsan0 amd64 14.2.0-4ubuntu2~24.04.1 [1322 kB]
+Get:27 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libtsan2 amd64 14.2.0-4ubuntu2~24.04.1 [2772 kB]
+Get:28 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libubsan1 amd64 14.2.0-4ubuntu2~24.04.1 [1184 kB]
+Get:29 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libhwasan0 amd64 14.2.0-4ubuntu2~24.04.1 [1641 kB]
+Get:30 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libquadmath0 amd64 14.2.0-4ubuntu2~24.04.1 [153 kB]
+Get:31 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libgcc-13-dev amd64 13.3.0-6ubuntu2~24.04.1 [2681 kB]
+Get:32 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 gcc-13-x86-64-linux-gnu amd64 13.3.0-6ubuntu2~24.04.1 [21.1 MB]
+Get:33 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 gcc-13 amd64 13.3.0-6ubuntu2~24.04.1 [494 kB]
+Get:34 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 gcc-x86-64-linux-gnu amd64 4:13.2.0-7ubuntu1 [1212 B]
+Get:35 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 gcc amd64 4:13.2.0-7ubuntu1 [5018 B]
+Get:36 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libstdc++-13-dev amd64 13.3.0-6ubuntu2~24.04.1 [2420 kB]
+Get:37 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 g++-13-x86-64-linux-gnu amd64 13.3.0-6ubuntu2~24.04.1 [12.2 MB]
+Get:38 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 g++-13 amd64 13.3.0-6ubuntu2~24.04.1 [16.0 kB]
+Get:39 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 g++-x86-64-linux-gnu amd64 4:13.2.0-7ubuntu1 [964 B]
+Get:40 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 g++ amd64 4:13.2.0-7ubuntu1 [1100 B]
+Get:41 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 make amd64 4.3-4.1build2 [180 kB]
+Get:42 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libdpkg-perl all 1.22.6ubuntu6.6 [268 kB]
+Get:43 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 bzip2 amd64 1.0.8-5.1build0.1 [34.5 kB]
+Get:44 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 lto-disabled-list all 47 [12.4 kB]
+Get:45 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 dpkg-dev all 1.22.6ubuntu6.6 [1074 kB]
+Get:46 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 build-essential amd64 12.10ubuntu1 [4928 B]
+Get:47 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libfakeroot amd64 1.33-1 [32.4 kB]
+Get:48 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 fakeroot amd64 1.33-1 [67.2 kB]
+Get:49 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 fonts-dejavu-mono all 2.37-8 [502 kB]
+Get:50 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 fonts-dejavu-core all 2.37-8 [835 kB]
+Get:51 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 fontconfig-config amd64 2.15.0-1.1ubuntu2 [37.3 kB]
+Get:52 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 javascript-common all 11+nmu1 [5936 B]
+Get:53 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libalgorithm-diff-perl all 1.201-1 [41.8 kB]
+Get:54 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libalgorithm-diff-xs-perl amd64 0.04-8build3 [11.2 kB]
+Get:55 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libalgorithm-merge-perl all 0.08-5 [11.4 kB]
+Get:56 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libaom3 amd64 3.8.2-2ubuntu0.1 [1941 kB]
+Get:57 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libfontconfig1 amd64 2.15.0-1.1ubuntu2 [139 kB]
+Get:58 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libsharpyuv0 amd64 1.3.2-0.4build3 [15.8 kB]
+Get:59 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libheif-plugin-aomdec amd64 1.17.6-1ubuntu4.4 [10.9 kB]
+Get:60 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libheif1 amd64 1.17.6-1ubuntu4.4 [276 kB]
+Get:61 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libjpeg-turbo8 amd64 2.1.5-2ubuntu2 [150 kB]
+Get:62 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libjpeg8 amd64 8c-2ubuntu11 [2148 B]
+Get:63 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libdeflate0 amd64 1.19-1build1.1 [43.9 kB]
+Get:64 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libjbig0 amd64 2.1-6.1ubuntu2 [29.7 kB]
+Get:65 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 liblerc4 amd64 4.0.0+ds-4ubuntu2 [179 kB]
+Get:66 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libwebp7 amd64 1.3.2-0.4build3 [230 kB]
+Get:67 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libtiff6 amd64 4.5.1+git230720-4ubuntu2.5 [200 kB]
+Get:68 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libxpm4 amd64 1:3.5.17-1build2 [36.5 kB]
+Get:69 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libgd3 amd64 2.3.3-9ubuntu5 [128 kB]
+Get:70 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libc-devtools amd64 2.39-0ubuntu8.7 [29.3 kB]
+Get:71 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libexpat1-dev amd64 2.6.1-2ubuntu0.4 [140 kB]
+Get:72 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libfile-fcntllock-perl amd64 0.22-4ubuntu5 [30.7 kB]
+Get:73 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libheif-plugin-aomenc amd64 1.17.6-1ubuntu4.4 [14.7 kB]
+Get:74 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libjs-jquery all 3.6.1+dfsg+~3.5.14-1 [328 kB]
+Get:75 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libjs-underscore all 1.13.4~dfsg+~1.11.4-3 [118 kB]
+Get:76 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libjs-sphinxdoc all 7.2.6-6 [149 kB]
+Get:77 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libpkgconf3 amd64 1.8.1-2build1 [30.7 kB]
+Get:78 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 zlib1g-dev amd64 1:1.3.dfsg-3.1ubuntu2.1 [894 kB]
+Get:79 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libpython3.12-dev amd64 3.12.3-1ubuntu0.13 [5682 kB]
+Get:80 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libpython3-dev amd64 3.12.3-0ubuntu2.1 [10.3 kB]
+Get:81 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 libssl-dev amd64 3.0.13-0ubuntu3.11 [2408 kB]
+Get:82 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 manpages-dev all 6.7-2 [2013 kB]
+Get:83 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 pkgconf-bin amd64 1.8.1-2build1 [20.7 kB]
+Get:84 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 pkgconf amd64 1.8.1-2build1 [16.8 kB]
+Get:85 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble/main amd64 pkg-config amd64 1.8.1-2build1 [7264 B]
+Get:86 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 python3.12-dev amd64 3.12.3-1ubuntu0.13 [498 kB]
+Get:87 http://us-east-1.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 python3-dev amd64 3.12.3-0ubuntu2.1 [26.7 kB]
+Fetched 87.8 MB in 1s (87.2 MB/s)
+Selecting previously unselected package binutils-common:amd64.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 72608 files and directories currently installed.)
+Preparing to unpack .../00-binutils-common_2.42-4ubuntu2.10_amd64.deb ...
+Unpacking binutils-common:amd64 (2.42-4ubuntu2.10) ...
+Selecting previously unselected package libsframe1:amd64.
+Preparing to unpack .../01-libsframe1_2.42-4ubuntu2.10_amd64.deb ...
+Unpacking libsframe1:amd64 (2.42-4ubuntu2.10) ...
+Selecting previously unselected package libbinutils:amd64.
+Preparing to unpack .../02-libbinutils_2.42-4ubuntu2.10_amd64.deb ...
+Unpacking libbinutils:amd64 (2.42-4ubuntu2.10) ...
+Selecting previously unselected package libctf-nobfd0:amd64.
+Preparing to unpack .../03-libctf-nobfd0_2.42-4ubuntu2.10_amd64.deb ...
+Unpacking libctf-nobfd0:amd64 (2.42-4ubuntu2.10) ...
+Selecting previously unselected package libctf0:amd64.
+Preparing to unpack .../04-libctf0_2.42-4ubuntu2.10_amd64.deb ...
+Unpacking libctf0:amd64 (2.42-4ubuntu2.10) ...
+Selecting previously unselected package libgprofng0:amd64.
+Preparing to unpack .../05-libgprofng0_2.42-4ubuntu2.10_amd64.deb ...
+Unpacking libgprofng0:amd64 (2.42-4ubuntu2.10) ...
+Selecting previously unselected package binutils-x86-64-linux-gnu.
+Preparing to unpack .../06-binutils-x86-64-linux-gnu_2.42-4ubuntu2.10_amd64.deb ...
+Unpacking binutils-x86-64-linux-gnu (2.42-4ubuntu2.10) ...
+Selecting previously unselected package binutils.
+Preparing to unpack .../07-binutils_2.42-4ubuntu2.10_amd64.deb ...
+Unpacking binutils (2.42-4ubuntu2.10) ...
+Selecting previously unselected package libc-dev-bin.
+Preparing to unpack .../08-libc-dev-bin_2.39-0ubuntu8.7_amd64.deb ...
+Unpacking libc-dev-bin (2.39-0ubuntu8.7) ...
+Selecting previously unselected package linux-libc-dev:amd64.
+Preparing to unpack .../09-linux-libc-dev_6.8.0-124.124_amd64.deb ...
+Unpacking linux-libc-dev:amd64 (6.8.0-124.124) ...
+Selecting previously unselected package libcrypt-dev:amd64.
+Preparing to unpack .../10-libcrypt-dev_1%3a4.4.36-4build1_amd64.deb ...
+Unpacking libcrypt-dev:amd64 (1:4.4.36-4build1) ...
+Selecting previously unselected package rpcsvc-proto.
+Preparing to unpack .../11-rpcsvc-proto_1.4.2-0ubuntu7_amd64.deb ...
+Unpacking rpcsvc-proto (1.4.2-0ubuntu7) ...
+Selecting previously unselected package libc6-dev:amd64.
+Preparing to unpack .../12-libc6-dev_2.39-0ubuntu8.7_amd64.deb ...
+Unpacking libc6-dev:amd64 (2.39-0ubuntu8.7) ...
+Selecting previously unselected package gcc-13-base:amd64.
+Preparing to unpack .../13-gcc-13-base_13.3.0-6ubuntu2~24.04.1_amd64.deb ...
+Unpacking gcc-13-base:amd64 (13.3.0-6ubuntu2~24.04.1) ...
+Selecting previously unselected package libisl23:amd64.
+Preparing to unpack .../14-libisl23_0.26-3build1.1_amd64.deb ...
+Unpacking libisl23:amd64 (0.26-3build1.1) ...
+Selecting previously unselected package libmpc3:amd64.
+Preparing to unpack .../15-libmpc3_1.3.1-1build1.1_amd64.deb ...
+Unpacking libmpc3:amd64 (1.3.1-1build1.1) ...
+Selecting previously unselected package cpp-13-x86-64-linux-gnu.
+Preparing to unpack .../16-cpp-13-x86-64-linux-gnu_13.3.0-6ubuntu2~24.04.1_amd64.deb ...
+Unpacking cpp-13-x86-64-linux-gnu (13.3.0-6ubuntu2~24.04.1) ...
+Selecting previously unselected package cpp-13.
+Preparing to unpack .../17-cpp-13_13.3.0-6ubuntu2~24.04.1_amd64.deb ...
+Unpacking cpp-13 (13.3.0-6ubuntu2~24.04.1) ...
+Selecting previously unselected package cpp-x86-64-linux-gnu.
+Preparing to unpack .../18-cpp-x86-64-linux-gnu_4%3a13.2.0-7ubuntu1_amd64.deb ...
+Unpacking cpp-x86-64-linux-gnu (4:13.2.0-7ubuntu1) ...
+Selecting previously unselected package cpp.
+Preparing to unpack .../19-cpp_4%3a13.2.0-7ubuntu1_amd64.deb ...
+Unpacking cpp (4:13.2.0-7ubuntu1) ...
+Selecting previously unselected package libcc1-0:amd64.
+Preparing to unpack .../20-libcc1-0_14.2.0-4ubuntu2~24.04.1_amd64.deb ...
+Unpacking libcc1-0:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Selecting previously unselected package libgomp1:amd64.
+Preparing to unpack .../21-libgomp1_14.2.0-4ubuntu2~24.04.1_amd64.deb ...
+Unpacking libgomp1:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Selecting previously unselected package libitm1:amd64.
+Preparing to unpack .../22-libitm1_14.2.0-4ubuntu2~24.04.1_amd64.deb ...
+Unpacking libitm1:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Selecting previously unselected package libatomic1:amd64.
+Preparing to unpack .../23-libatomic1_14.2.0-4ubuntu2~24.04.1_amd64.deb ...
+Unpacking libatomic1:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Selecting previously unselected package libasan8:amd64.
+Preparing to unpack .../24-libasan8_14.2.0-4ubuntu2~24.04.1_amd64.deb ...
+Unpacking libasan8:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Selecting previously unselected package liblsan0:amd64.
+Preparing to unpack .../25-liblsan0_14.2.0-4ubuntu2~24.04.1_amd64.deb ...
+Unpacking liblsan0:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Selecting previously unselected package libtsan2:amd64.
+Preparing to unpack .../26-libtsan2_14.2.0-4ubuntu2~24.04.1_amd64.deb ...
+Unpacking libtsan2:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Selecting previously unselected package libubsan1:amd64.
+Preparing to unpack .../27-libubsan1_14.2.0-4ubuntu2~24.04.1_amd64.deb ...
+Unpacking libubsan1:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Selecting previously unselected package libhwasan0:amd64.
+Preparing to unpack .../28-libhwasan0_14.2.0-4ubuntu2~24.04.1_amd64.deb ...
+Unpacking libhwasan0:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Selecting previously unselected package libquadmath0:amd64.
+Preparing to unpack .../29-libquadmath0_14.2.0-4ubuntu2~24.04.1_amd64.deb ...
+Unpacking libquadmath0:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Selecting previously unselected package libgcc-13-dev:amd64.
+Preparing to unpack .../30-libgcc-13-dev_13.3.0-6ubuntu2~24.04.1_amd64.deb ...
+Unpacking libgcc-13-dev:amd64 (13.3.0-6ubuntu2~24.04.1) ...
+Selecting previously unselected package gcc-13-x86-64-linux-gnu.
+Preparing to unpack .../31-gcc-13-x86-64-linux-gnu_13.3.0-6ubuntu2~24.04.1_amd64.deb ...
+Unpacking gcc-13-x86-64-linux-gnu (13.3.0-6ubuntu2~24.04.1) ...
+Selecting previously unselected package gcc-13.
+Preparing to unpack .../32-gcc-13_13.3.0-6ubuntu2~24.04.1_amd64.deb ...
+Unpacking gcc-13 (13.3.0-6ubuntu2~24.04.1) ...
+Selecting previously unselected package gcc-x86-64-linux-gnu.
+Preparing to unpack .../33-gcc-x86-64-linux-gnu_4%3a13.2.0-7ubuntu1_amd64.deb ...
+Unpacking gcc-x86-64-linux-gnu (4:13.2.0-7ubuntu1) ...
+Selecting previously unselected package gcc.
+Preparing to unpack .../34-gcc_4%3a13.2.0-7ubuntu1_amd64.deb ...
+Unpacking gcc (4:13.2.0-7ubuntu1) ...
+Selecting previously unselected package libstdc++-13-dev:amd64.
+Preparing to unpack .../35-libstdc++-13-dev_13.3.0-6ubuntu2~24.04.1_amd64.deb ...
+Unpacking libstdc++-13-dev:amd64 (13.3.0-6ubuntu2~24.04.1) ...
+Selecting previously unselected package g++-13-x86-64-linux-gnu.
+Preparing to unpack .../36-g++-13-x86-64-linux-gnu_13.3.0-6ubuntu2~24.04.1_amd64.deb ...
+Unpacking g++-13-x86-64-linux-gnu (13.3.0-6ubuntu2~24.04.1) ...
+Selecting previously unselected package g++-13.
+Preparing to unpack .../37-g++-13_13.3.0-6ubuntu2~24.04.1_amd64.deb ...
+Unpacking g++-13 (13.3.0-6ubuntu2~24.04.1) ...
+Selecting previously unselected package g++-x86-64-linux-gnu.
+Preparing to unpack .../38-g++-x86-64-linux-gnu_4%3a13.2.0-7ubuntu1_amd64.deb ...
+Unpacking g++-x86-64-linux-gnu (4:13.2.0-7ubuntu1) ...
+Selecting previously unselected package g++.
+Preparing to unpack .../39-g++_4%3a13.2.0-7ubuntu1_amd64.deb ...
+Unpacking g++ (4:13.2.0-7ubuntu1) ...
+Selecting previously unselected package make.
+Preparing to unpack .../40-make_4.3-4.1build2_amd64.deb ...
+Unpacking make (4.3-4.1build2) ...
+Selecting previously unselected package libdpkg-perl.
+Preparing to unpack .../41-libdpkg-perl_1.22.6ubuntu6.6_all.deb ...
+Unpacking libdpkg-perl (1.22.6ubuntu6.6) ...
+Selecting previously unselected package bzip2.
+Preparing to unpack .../42-bzip2_1.0.8-5.1build0.1_amd64.deb ...
+Unpacking bzip2 (1.0.8-5.1build0.1) ...
+Selecting previously unselected package lto-disabled-list.
+Preparing to unpack .../43-lto-disabled-list_47_all.deb ...
+Unpacking lto-disabled-list (47) ...
+Selecting previously unselected package dpkg-dev.
+Preparing to unpack .../44-dpkg-dev_1.22.6ubuntu6.6_all.deb ...
+Unpacking dpkg-dev (1.22.6ubuntu6.6) ...
+Selecting previously unselected package build-essential.
+Preparing to unpack .../45-build-essential_12.10ubuntu1_amd64.deb ...
+Unpacking build-essential (12.10ubuntu1) ...
+Selecting previously unselected package libfakeroot:amd64.
+Preparing to unpack .../46-libfakeroot_1.33-1_amd64.deb ...
+Unpacking libfakeroot:amd64 (1.33-1) ...
+Selecting previously unselected package fakeroot.
+Preparing to unpack .../47-fakeroot_1.33-1_amd64.deb ...
+Unpacking fakeroot (1.33-1) ...
+Selecting previously unselected package fonts-dejavu-mono.
+Preparing to unpack .../48-fonts-dejavu-mono_2.37-8_all.deb ...
+Unpacking fonts-dejavu-mono (2.37-8) ...
+Selecting previously unselected package fonts-dejavu-core.
+Preparing to unpack .../49-fonts-dejavu-core_2.37-8_all.deb ...
+Unpacking fonts-dejavu-core (2.37-8) ...
+Selecting previously unselected package fontconfig-config.
+Preparing to unpack .../50-fontconfig-config_2.15.0-1.1ubuntu2_amd64.deb ...
+Unpacking fontconfig-config (2.15.0-1.1ubuntu2) ...
+Selecting previously unselected package javascript-common.
+Preparing to unpack .../51-javascript-common_11+nmu1_all.deb ...
+Unpacking javascript-common (11+nmu1) ...
+Selecting previously unselected package libalgorithm-diff-perl.
+Preparing to unpack .../52-libalgorithm-diff-perl_1.201-1_all.deb ...
+Unpacking libalgorithm-diff-perl (1.201-1) ...
+Selecting previously unselected package libalgorithm-diff-xs-perl:amd64.
+Preparing to unpack .../53-libalgorithm-diff-xs-perl_0.04-8build3_amd64.deb ...
+Unpacking libalgorithm-diff-xs-perl:amd64 (0.04-8build3) ...
+Selecting previously unselected package libalgorithm-merge-perl.
+Preparing to unpack .../54-libalgorithm-merge-perl_0.08-5_all.deb ...
+Unpacking libalgorithm-merge-perl (0.08-5) ...
+Selecting previously unselected package libaom3:amd64.
+Preparing to unpack .../55-libaom3_3.8.2-2ubuntu0.1_amd64.deb ...
+Unpacking libaom3:amd64 (3.8.2-2ubuntu0.1) ...
+Selecting previously unselected package libfontconfig1:amd64.
+Preparing to unpack .../56-libfontconfig1_2.15.0-1.1ubuntu2_amd64.deb ...
+Unpacking libfontconfig1:amd64 (2.15.0-1.1ubuntu2) ...
+Selecting previously unselected package libsharpyuv0:amd64.
+Preparing to unpack .../57-libsharpyuv0_1.3.2-0.4build3_amd64.deb ...
+Unpacking libsharpyuv0:amd64 (1.3.2-0.4build3) ...
+Selecting previously unselected package libheif-plugin-aomdec:amd64.
+Preparing to unpack .../58-libheif-plugin-aomdec_1.17.6-1ubuntu4.4_amd64.deb ...
+Unpacking libheif-plugin-aomdec:amd64 (1.17.6-1ubuntu4.4) ...
+Selecting previously unselected package libheif1:amd64.
+Preparing to unpack .../59-libheif1_1.17.6-1ubuntu4.4_amd64.deb ...
+Unpacking libheif1:amd64 (1.17.6-1ubuntu4.4) ...
+Selecting previously unselected package libjpeg-turbo8:amd64.
+Preparing to unpack .../60-libjpeg-turbo8_2.1.5-2ubuntu2_amd64.deb ...
+Unpacking libjpeg-turbo8:amd64 (2.1.5-2ubuntu2) ...
+Selecting previously unselected package libjpeg8:amd64.
+Preparing to unpack .../61-libjpeg8_8c-2ubuntu11_amd64.deb ...
+Unpacking libjpeg8:amd64 (8c-2ubuntu11) ...
+Selecting previously unselected package libdeflate0:amd64.
+Preparing to unpack .../62-libdeflate0_1.19-1build1.1_amd64.deb ...
+Unpacking libdeflate0:amd64 (1.19-1build1.1) ...
+Selecting previously unselected package libjbig0:amd64.
+Preparing to unpack .../63-libjbig0_2.1-6.1ubuntu2_amd64.deb ...
+Unpacking libjbig0:amd64 (2.1-6.1ubuntu2) ...
+Selecting previously unselected package liblerc4:amd64.
+Preparing to unpack .../64-liblerc4_4.0.0+ds-4ubuntu2_amd64.deb ...
+Unpacking liblerc4:amd64 (4.0.0+ds-4ubuntu2) ...
+Selecting previously unselected package libwebp7:amd64.
+Preparing to unpack .../65-libwebp7_1.3.2-0.4build3_amd64.deb ...
+Unpacking libwebp7:amd64 (1.3.2-0.4build3) ...
+Selecting previously unselected package libtiff6:amd64.
+Preparing to unpack .../66-libtiff6_4.5.1+git230720-4ubuntu2.5_amd64.deb ...
+Unpacking libtiff6:amd64 (4.5.1+git230720-4ubuntu2.5) ...
+Selecting previously unselected package libxpm4:amd64.
+Preparing to unpack .../67-libxpm4_1%3a3.5.17-1build2_amd64.deb ...
+Unpacking libxpm4:amd64 (1:3.5.17-1build2) ...
+Selecting previously unselected package libgd3:amd64.
+Preparing to unpack .../68-libgd3_2.3.3-9ubuntu5_amd64.deb ...
+Unpacking libgd3:amd64 (2.3.3-9ubuntu5) ...
+Selecting previously unselected package libc-devtools.
+Preparing to unpack .../69-libc-devtools_2.39-0ubuntu8.7_amd64.deb ...
+Unpacking libc-devtools (2.39-0ubuntu8.7) ...
+Selecting previously unselected package libexpat1-dev:amd64.
+Preparing to unpack .../70-libexpat1-dev_2.6.1-2ubuntu0.4_amd64.deb ...
+Unpacking libexpat1-dev:amd64 (2.6.1-2ubuntu0.4) ...
+Selecting previously unselected package libfile-fcntllock-perl.
+Preparing to unpack .../71-libfile-fcntllock-perl_0.22-4ubuntu5_amd64.deb ...
+Unpacking libfile-fcntllock-perl (0.22-4ubuntu5) ...
+Selecting previously unselected package libheif-plugin-aomenc:amd64.
+Preparing to unpack .../72-libheif-plugin-aomenc_1.17.6-1ubuntu4.4_amd64.deb ...
+Unpacking libheif-plugin-aomenc:amd64 (1.17.6-1ubuntu4.4) ...
+Selecting previously unselected package libjs-jquery.
+Preparing to unpack .../73-libjs-jquery_3.6.1+dfsg+~3.5.14-1_all.deb ...
+Unpacking libjs-jquery (3.6.1+dfsg+~3.5.14-1) ...
+Selecting previously unselected package libjs-underscore.
+Preparing to unpack .../74-libjs-underscore_1.13.4~dfsg+~1.11.4-3_all.deb ...
+Unpacking libjs-underscore (1.13.4~dfsg+~1.11.4-3) ...
+Selecting previously unselected package libjs-sphinxdoc.
+Preparing to unpack .../75-libjs-sphinxdoc_7.2.6-6_all.deb ...
+Unpacking libjs-sphinxdoc (7.2.6-6) ...
+Selecting previously unselected package libpkgconf3:amd64.
+Preparing to unpack .../76-libpkgconf3_1.8.1-2build1_amd64.deb ...
+Unpacking libpkgconf3:amd64 (1.8.1-2build1) ...
+Selecting previously unselected package zlib1g-dev:amd64.
+Preparing to unpack .../77-zlib1g-dev_1%3a1.3.dfsg-3.1ubuntu2.1_amd64.deb ...
+Unpacking zlib1g-dev:amd64 (1:1.3.dfsg-3.1ubuntu2.1) ...
+Selecting previously unselected package libpython3.12-dev:amd64.
+Preparing to unpack .../78-libpython3.12-dev_3.12.3-1ubuntu0.13_amd64.deb ...
+Unpacking libpython3.12-dev:amd64 (3.12.3-1ubuntu0.13) ...
+Selecting previously unselected package libpython3-dev:amd64.
+Preparing to unpack .../79-libpython3-dev_3.12.3-0ubuntu2.1_amd64.deb ...
+Unpacking libpython3-dev:amd64 (3.12.3-0ubuntu2.1) ...
+Selecting previously unselected package libssl-dev:amd64.
+Preparing to unpack .../80-libssl-dev_3.0.13-0ubuntu3.11_amd64.deb ...
+Unpacking libssl-dev:amd64 (3.0.13-0ubuntu3.11) ...
+Selecting previously unselected package manpages-dev.
+Preparing to unpack .../81-manpages-dev_6.7-2_all.deb ...
+Unpacking manpages-dev (6.7-2) ...
+Selecting previously unselected package pkgconf-bin.
+Preparing to unpack .../82-pkgconf-bin_1.8.1-2build1_amd64.deb ...
+Unpacking pkgconf-bin (1.8.1-2build1) ...
+Selecting previously unselected package pkgconf:amd64.
+Preparing to unpack .../83-pkgconf_1.8.1-2build1_amd64.deb ...
+Unpacking pkgconf:amd64 (1.8.1-2build1) ...
+Selecting previously unselected package pkg-config:amd64.
+Preparing to unpack .../84-pkg-config_1.8.1-2build1_amd64.deb ...
+Unpacking pkg-config:amd64 (1.8.1-2build1) ...
+Selecting previously unselected package python3.12-dev.
+Preparing to unpack .../85-python3.12-dev_3.12.3-1ubuntu0.13_amd64.deb ...
+Unpacking python3.12-dev (3.12.3-1ubuntu0.13) ...
+Selecting previously unselected package python3-dev.
+Preparing to unpack .../86-python3-dev_3.12.3-0ubuntu2.1_amd64.deb ...
+Unpacking python3-dev (3.12.3-0ubuntu2.1) ...
+Setting up javascript-common (11+nmu1) ...
+Setting up libsharpyuv0:amd64 (1.3.2-0.4build3) ...
+Setting up libaom3:amd64 (3.8.2-2ubuntu0.1) ...
+Setting up manpages-dev (6.7-2) ...
+Setting up lto-disabled-list (47) ...
+Setting up liblerc4:amd64 (4.0.0+ds-4ubuntu2) ...
+Setting up libxpm4:amd64 (1:3.5.17-1build2) ...
+Setting up libfile-fcntllock-perl (0.22-4ubuntu5) ...
+Setting up libalgorithm-diff-perl (1.201-1) ...
+Setting up binutils-common:amd64 (2.42-4ubuntu2.10) ...
+Setting up libdeflate0:amd64 (1.19-1build1.1) ...
+Setting up linux-libc-dev:amd64 (6.8.0-124.124) ...
+Setting up libctf-nobfd0:amd64 (2.42-4ubuntu2.10) ...
+Setting up libgomp1:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Setting up bzip2 (1.0.8-5.1build0.1) ...
+Setting up libjbig0:amd64 (2.1-6.1ubuntu2) ...
+Setting up libsframe1:amd64 (2.42-4ubuntu2.10) ...
+Setting up libfakeroot:amd64 (1.33-1) ...
+Setting up fakeroot (1.33-1) ...
+update-alternatives: using /usr/bin/fakeroot-sysv to provide /usr/bin/fakeroot (fakeroot) in auto mode
+Setting up libpkgconf3:amd64 (1.8.1-2build1) ...
+Setting up rpcsvc-proto (1.4.2-0ubuntu7) ...
+Setting up gcc-13-base:amd64 (13.3.0-6ubuntu2~24.04.1) ...
+Setting up make (4.3-4.1build2) ...
+Setting up libquadmath0:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Setting up fonts-dejavu-mono (2.37-8) ...
+Setting up libssl-dev:amd64 (3.0.13-0ubuntu3.11) ...
+Setting up libmpc3:amd64 (1.3.1-1build1.1) ...
+Setting up libatomic1:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Setting up fonts-dejavu-core (2.37-8) ...
+Setting up pkgconf-bin (1.8.1-2build1) ...
+Setting up libjpeg-turbo8:amd64 (2.1.5-2ubuntu2) ...
+Setting up libdpkg-perl (1.22.6ubuntu6.6) ...
+Setting up libwebp7:amd64 (1.3.2-0.4build3) ...
+Setting up libubsan1:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Setting up libhwasan0:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Setting up libcrypt-dev:amd64 (1:4.4.36-4build1) ...
+Setting up libasan8:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Setting up libtsan2:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Setting up libjs-jquery (3.6.1+dfsg+~3.5.14-1) ...
+Setting up libbinutils:amd64 (2.42-4ubuntu2.10) ...
+Setting up libisl23:amd64 (0.26-3build1.1) ...
+Setting up libc-dev-bin (2.39-0ubuntu8.7) ...
+Setting up libalgorithm-diff-xs-perl:amd64 (0.04-8build3) ...
+Setting up libcc1-0:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Setting up liblsan0:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Setting up libitm1:amd64 (14.2.0-4ubuntu2~24.04.1) ...
+Setting up libjs-underscore (1.13.4~dfsg+~1.11.4-3) ...
+Setting up libalgorithm-merge-perl (0.08-5) ...
+Setting up libctf0:amd64 (2.42-4ubuntu2.10) ...
+Setting up libjpeg8:amd64 (8c-2ubuntu11) ...
+Setting up cpp-13-x86-64-linux-gnu (13.3.0-6ubuntu2~24.04.1) ...
+Setting up fontconfig-config (2.15.0-1.1ubuntu2) ...
+Setting up pkgconf:amd64 (1.8.1-2build1) ...
+Setting up libgprofng0:amd64 (2.42-4ubuntu2.10) ...
+Setting up pkg-config:amd64 (1.8.1-2build1) ...
+Setting up libjs-sphinxdoc (7.2.6-6) ...
+Setting up libgcc-13-dev:amd64 (13.3.0-6ubuntu2~24.04.1) ...
+Setting up libtiff6:amd64 (4.5.1+git230720-4ubuntu2.5) ...
+Setting up libc6-dev:amd64 (2.39-0ubuntu8.7) ...
+Setting up libstdc++-13-dev:amd64 (13.3.0-6ubuntu2~24.04.1) ...
+Setting up binutils-x86-64-linux-gnu (2.42-4ubuntu2.10) ...
+Setting up cpp-x86-64-linux-gnu (4:13.2.0-7ubuntu1) ...
+Setting up cpp-13 (13.3.0-6ubuntu2~24.04.1) ...
+Setting up gcc-13-x86-64-linux-gnu (13.3.0-6ubuntu2~24.04.1) ...
+Setting up binutils (2.42-4ubuntu2.10) ...
+Setting up dpkg-dev (1.22.6ubuntu6.6) ...
+Setting up libexpat1-dev:amd64 (2.6.1-2ubuntu0.4) ...
+Setting up gcc-13 (13.3.0-6ubuntu2~24.04.1) ...
+Setting up zlib1g-dev:amd64 (1:1.3.dfsg-3.1ubuntu2.1) ...
+Setting up cpp (4:13.2.0-7ubuntu1) ...
+Setting up g++-13-x86-64-linux-gnu (13.3.0-6ubuntu2~24.04.1) ...
+Setting up gcc-x86-64-linux-gnu (4:13.2.0-7ubuntu1) ...
+Setting up libpython3.12-dev:amd64 (3.12.3-1ubuntu0.13) ...
+Setting up gcc (4:13.2.0-7ubuntu1) ...
+Setting up python3.12-dev (3.12.3-1ubuntu0.13) ...
+Setting up g++-x86-64-linux-gnu (4:13.2.0-7ubuntu1) ...
+Setting up g++-13 (13.3.0-6ubuntu2~24.04.1) ...
+Setting up libpython3-dev:amd64 (3.12.3-0ubuntu2.1) ...
+Setting up python3-dev (3.12.3-0ubuntu2.1) ...
+Setting up g++ (4:13.2.0-7ubuntu1) ...
+update-alternatives: using /usr/bin/g++ to provide /usr/bin/c++ (c++) in auto mode
+Setting up build-essential (12.10ubuntu1) ...
+Setting up libheif-plugin-aomdec:amd64 (1.17.6-1ubuntu4.4) ...
+Setting up libheif1:amd64 (1.17.6-1ubuntu4.4) ...
+Setting up libheif-plugin-aomenc:amd64 (1.17.6-1ubuntu4.4) ...
+Processing triggers for libc-bin (2.39-0ubuntu8.7) ...
+Processing triggers for man-db (2.12.0-4build2) ...
+Processing triggers for sgml-base (1.31) ...
+Setting up libfontconfig1:amd64 (2.15.0-1.1ubuntu2) ...
+Setting up libgd3:amd64 (2.3.3-9ubuntu5) ...
+Setting up libc-devtools (2.39-0ubuntu8.7) ...
+Processing triggers for libc-bin (2.39-0ubuntu8.7) ...
+
+Running kernel seems to be up-to-date.
+
+No services need to be restarted.
+
+No containers need to be restarted.
+
+No user sessions are running outdated binaries.
+
+No VM guests are running outdated hypervisor (qemu) binaries on this host.
+==> [3/8] Install Rust toolchain
+info: downloading installer
+warn: It looks like you have an existing rustup settings file at:
+warn: /data/.rustup/settings.toml
+warn: Rustup will install the default toolchain as specified in the settings file,
+warn: instead of the one inferred from the default host triple.
+info: profile set to default
+info: default host triple is x86_64-unknown-linux-gnu
+info: syncing channel updates for stable-x86_64-unknown-linux-gnu
+info: latest update on 2026-05-28 for version 1.96.0 (ac68faa20 2026-05-25)
+info: downloading 6 components
+info: default toolchain set to stable-x86_64-unknown-linux-gnu
+
+  stable-x86_64-unknown-linux-gnu installed - rustc 1.96.0 (ac68faa20 2026-05-25)
+
+
+Rust is installed now. Great!
+
+To get started you need Cargo's bin directory (/data/.cargo/bin) in your PATH
+environment variable. This has not been done automatically.
+
+To configure your current shell, you need to source
+the corresponding env file under /data/.cargo.
+
+This is usually done by running one of the following (note the leading DOT):
+. "/data/.cargo/env"            # For sh/bash/zsh/ash/dash/pdksh
+source "/data/.cargo/env.fish"  # For fish
+source "/data/.cargo/env.nu"  # For nushell
+source "/data/.cargo/env.tcsh"  # For tcsh
+. "/data/.cargo/env.ps1"        # For pwsh
+source "/data/.cargo/env.xsh"   # For xonsh
+==> [4/8] Install uv
+downloading uv 0.11.22 x86_64-unknown-linux-gnu
+installing to /home/ubuntu/.local/bin
+  uv
+  uvx
+everything's installed!
+
+To add $HOME/.local/bin to your PATH, either restart your shell or run:
+
+    source $HOME/.local/bin/env (sh, bash, zsh)
+    source $HOME/.local/bin/env.fish (fish)
+==> [5/8] Stage source into /data/pdq
+    extracting /home/ubuntu/pdq-src.tar.gz (scp delivery)
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.macl'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'SCHILY.fflags'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.FinderInfo'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.macl'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.macl'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+==> [6/8] Build PDQ (release, --features shootout) + Python module
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded ahash v0.8.12
+  Downloaded aho-corasick v1.1.4
+  Downloaded futures-macro v0.3.31
+  Downloaded futures-channel v0.3.31
+  Downloaded rayon-core v1.13.0
+  Downloaded parking_lot_core v0.9.12
+  Downloaded hex v0.4.3
+  Downloaded icu_normalizer v2.1.1
+  Downloaded iana-time-zone v0.1.64
+  Downloaded datafusion-physical-expr-adapter v54.0.0
+  Downloaded displaydoc v0.2.5
+  Downloaded byteorder v1.5.0
+  Downloaded idna v1.1.0
+  Downloaded arrow-cast v58.3.0
+  Downloaded is_terminal_polyfill v1.70.2
+  Downloaded hashbrown v0.14.5
+  Downloaded once_cell v1.21.3
+  Downloaded datafusion-pruning v54.0.0
+  Downloaded integer-encoding v3.0.4
+  Downloaded datafusion-datasource-json v54.0.0
+  Downloaded futures-task v0.3.31
+  Downloaded foldhash v0.1.5
+  Downloaded stable_deref_trait v1.2.1
+  Downloaded pin-utils v0.1.0
+  Downloaded jobserver v0.1.34
+  Downloaded glob v0.3.3
+  Downloaded futures-io v0.3.31
+  Downloaded percent-encoding v2.3.2
+  Downloaded strsim v0.11.1
+  Downloaded datafusion-common-runtime v54.0.0
+  Downloaded sqlparser_derive v0.5.0
+  Downloaded scopeguard v1.2.0
+  Downloaded lexical-core v1.0.6
+  Downloaded lock_api v0.4.14
+  Downloaded heck v0.5.0
+  Downloaded synstructure v0.13.2
+  Downloaded datafusion-datasource-csv v54.0.0
+  Downloaded utf8_iter v1.0.4
+  Downloaded tokio-macros v2.7.0
+  Downloaded target-lexicon v0.13.3
+  Downloaded yoke-derive v0.8.1
+  Downloaded tiny-keccak v2.0.2
+  Downloaded tempfile v3.23.0
+  Downloaded semver v1.0.27
+  Downloaded tokio-stream v0.1.18
+  Downloaded zerovec-derive v0.11.2
+  Downloaded zstd v0.13.3
+  Downloaded zerofrom-derive v0.1.6
+  Downloaded zerofrom v0.1.6
+  Downloaded uuid v1.23.0
+  Downloaded url v2.5.7
+  Downloaded thiserror v2.0.17
+  Downloaded zerocopy-derive v0.8.31
+  Downloaded zstd-safe v7.2.4
+  Downloaded tokio-util v0.7.18
+  Downloaded ryu v1.0.20
+  Downloaded pyo3-async-runtimes v0.28.0
+  Downloaded yoke v0.8.1
+  Downloaded zlib-rs v0.5.3
+  Downloaded unicode-ident v1.0.22
+  Downloaded zerocopy v0.8.31
+  Downloaded syn v2.0.117
+  Downloaded pyo3-ffi v0.28.3
+  Downloaded zerotrie v0.2.3
+  Downloaded tracing v0.1.43
+  Downloaded num-bigint v0.4.6
+  Downloaded lexical-write-float v1.0.6
+  Downloaded unicode-segmentation v1.12.0
+  Downloaded libm v0.2.15
+  Downloaded zerovec v0.11.5
+  Downloaded sqlparser v0.62.0
+  Downloaded regex v1.12.2
+  Downloaded rayon v1.11.0
+  Downloaded lexical-parse-float v1.0.6
+  Downloaded icu_properties_data v2.1.2
+  Downloaded object_store v0.13.2
+  Downloaded hashbrown v0.17.1
+  Downloaded http v1.4.0
+  Downloaded hashbrown v0.15.5
+  Downloaded itertools v0.14.0
+  Downloaded indexmap v2.14.0
+  Downloaded rand v0.9.2
+  Downloaded regex-syntax v0.8.10
+  Downloaded icu_normalizer_data v2.1.1
+  Downloaded datafusion-physical-plan v54.0.0
+  Downloaded rustix v1.1.2
+  Downloaded chrono-tz v0.10.4
+  Downloaded brotli v8.0.2
+  Downloaded zstd-sys v2.0.16+zstd.1.5.7
+  Downloaded csv v1.4.0
+  Downloaded datafusion-physical-expr v54.0.0
+  Downloaded lexical-util v1.0.7
+  Downloaded icu_collections v2.1.1
+  Downloaded serde v1.0.228
+  Downloaded regex-automata v0.4.13
+  Downloaded tokio v1.52.3
+  Downloaded pyo3-macros-backend v0.28.3
+  Downloaded icu_locale_core v2.1.1
+  Downloaded datafusion-functions v54.0.0
+  Downloaded datafusion-common v54.0.0
+  Downloaded unicode-width v0.2.2
+  Downloaded datafusion-expr v54.0.0
+  Downloaded datafusion v54.0.0
+  Downloaded arrow-array v58.3.0
+  Downloaded petgraph v0.8.3
+  Downloaded memchr v2.8.0
+  Downloaded libc v0.2.186
+  Downloaded lexical-write-integer v1.0.6
+  Downloaded half v2.7.1
+  Downloaded smallvec v1.15.1
+  Downloaded parquet v58.3.0
+  Downloaded serde_core v1.0.228
+  Downloaded datafusion-optimizer v54.0.0
+  Downloaded proc-macro2 v1.0.103
+  Downloaded icu_properties v2.1.2
+  Downloaded getrandom v0.3.4
+  Downloaded chrono v0.4.44
+  Downloaded litemap v0.8.1
+  Downloaded brotli-decompressor v5.0.0
+  Downloaded snap v1.1.1
+  Downloaded simdutf8 v0.1.5
+  Downloaded parking_lot v0.12.5
+  Downloaded clap_builder v4.5.53
+  Downloaded serde_json v1.0.145
+  Downloaded num-traits v0.2.19
+  Downloaded lz4_flex v0.13.0
+  Downloaded pyo3 v0.28.3
+  Downloaded lexical-parse-integer v1.0.6
+  Downloaded datafusion-functions-aggregate v54.0.0
+  Downloaded datafusion-datasource v54.0.0
+  Downloaded arrow-ipc v58.3.0
+  Downloaded fst v0.4.7
+  Downloaded pyo3-build-config v0.28.3
+  Downloaded getrandom v0.4.2
+  Downloaded datafusion-datasource-parquet v54.0.0
+  Downloaded anstyle v1.0.13
+  Downloaded rand_core v0.9.3
+  Downloaded pin-project v1.1.13
+  Downloaded paste v1.0.15
+  Downloaded log v0.4.29
+  Downloaded libz-rs-sys v0.5.3
+  Downloaded datafusion-functions-nested v54.0.0
+  Downloaded slab v0.4.11
+  Downloaded rand_chacha v0.9.0
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded pin-project-internal v1.1.13
+  Downloaded getrandom v0.2.16
+  Downloaded datafusion-physical-expr-common v54.0.0
+  Downloaded arrow v58.3.0
+  Downloaded arrow-buffer v58.3.0
+  Downloaded shlex v1.3.0
+  Downloaded seq-macro v0.3.6
+  Downloaded flate2 v1.1.5
+  Downloaded cc v1.2.49
+  Downloaded bigdecimal v0.4.9
+  Downloaded utf8parse v0.2.2
+  Downloaded pin-project-lite v0.2.16
+  Downloaded datafusion-sql v54.0.0
+  Downloaded datafusion-physical-optimizer v54.0.0
+  Downloaded datafusion-expr-common v54.0.0
+  Downloaded bytes v1.11.0
+  Downloaded writeable v0.6.2
+  Downloaded twox-hash v2.1.2
+  Downloaded thiserror-impl v2.0.17
+  Downloaded memmap2 v0.9.9
+  Downloaded walkdir v2.5.0
+  Downloaded tracing-core v0.1.35
+  Downloaded tracing-attributes v0.1.31
+  Downloaded quote v1.0.45
+  Downloaded arrow-select v58.3.0
+  Downloaded allocator-api2 v0.2.21
+  Downloaded siphasher v1.0.1
+  Downloaded arrow-data v58.3.0
+  Downloaded anyhow v1.0.100
+  Downloaded phf v0.12.1
+  Downloaded humantime v2.3.0
+  Downloaded comfy-table v7.2.1
+  Downloaded arrow-row v58.3.0
+  Downloaded version_check v0.9.5
+  Downloaded thrift v0.17.0
+  Downloaded serde_derive v1.0.228
+  Downloaded pyo3-async-runtimes-macros v0.28.0
+  Downloaded pkg-config v0.3.32
+  Downloaded num-complex v0.4.6
+  Downloaded datafusion-catalog v54.0.0
+  Downloaded arrow-json v58.3.0
+  Downloaded tinystr v0.8.2
+  Downloaded potential_utf v0.1.4
+  Downloaded ordered-float v2.10.1
+  Downloaded datafusion-functions-aggregate-common v54.0.0
+  Downloaded arrow-arith v58.3.0
+  Downloaded rustc_version v0.4.1
+  Downloaded phf_shared v0.12.1
+  Downloaded datafusion-catalog-listing v54.0.0
+  Downloaded crc32fast v1.5.0
+  Downloaded arrow-csv v58.3.0
+  Downloaded futures-core v0.3.31
+  Downloaded find-msvc-tools v0.1.5
+  Downloaded datafusion-macros v54.0.0
+  Downloaded crossbeam-epoch v0.9.18
+  Downloaded bitflags v2.10.0
+  Downloaded futures-executor v0.3.31
+  Downloaded foldhash v0.2.0
+  Downloaded flatbuffers v25.9.23
+  Downloaded datafusion-session v54.0.0
+  Downloaded num-integer v0.1.46
+  Downloaded clap v4.5.53
+  Downloaded futures v0.3.31
+  Downloaded datafusion-functions-window-common v54.0.0
+  Downloaded datafusion-functions-window v54.0.0
+  Downloaded datafusion-functions-table v54.0.0
+  Downloaded datafusion-execution v54.0.0
+  Downloaded linux-raw-sys v0.11.0
+  Downloaded datafusion-datasource-arrow v54.0.0
+  Downloaded same-file v1.0.6
+  Downloaded const-random-macro v0.1.16
+  Downloaded alloc-no-stdlib v2.0.4
+  Downloaded futures-sink v0.3.31
+  Downloaded datafusion-doc v54.0.0
+  Downloaded colorchoice v1.0.4
+  Downloaded equivalent v1.0.2
+  Downloaded clap_lex v0.7.6
+  Downloaded fastrand v2.3.0
+  Downloaded autocfg v1.5.0
+  Downloaded errno v0.3.14
+  Downloaded form_urlencoded v1.2.2
+  Downloaded arrow-pyarrow v58.3.0
+  Downloaded anstream v0.6.21
+  Downloaded pyo3-macros v0.28.3
+  Downloaded itoa v1.0.15
+  Downloaded idna_adapter v1.2.1
+  Downloaded base64 v0.22.1
+  Downloaded async-trait v0.1.89
+  Downloaded crunchy v0.2.4
+  Downloaded const-random v0.1.18
+  Downloaded arrow-ord v58.3.0
+  Downloaded anstyle-query v1.1.5
+  Downloaded crossbeam-deque v0.8.6
+  Downloaded icu_provider v2.1.1
+  Downloaded fixedbitset v0.5.7
+  Downloaded dashmap v6.1.0
+  Downloaded alloc-stdlib v0.2.2
+  Downloaded csv-core v0.1.13
+  Downloaded arrow-string v58.3.0
+  Downloaded crossbeam-utils v0.8.21
+  Downloaded cfg-if v1.0.4
+  Downloaded anstyle-parse v0.2.7
+  Downloaded futures-util v0.3.31
+  Downloaded arrow-schema v58.3.0
+  Downloaded clap_derive v4.5.49
+  Downloaded either v1.15.0
+  Downloaded atoi v2.0.0
+   Compiling proc-macro2 v1.0.103
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.22
+   Compiling libc v0.2.186
+   Compiling autocfg v1.5.0
+   Compiling cfg-if v1.0.4
+   Compiling libm v0.2.15
+   Compiling num-traits v0.2.19
+   Compiling memchr v2.8.0
+   Compiling syn v2.0.117
+   Compiling bytes v1.11.0
+   Compiling serde_core v1.0.228
+   Compiling zerocopy v0.8.31
+   Compiling once_cell v1.21.3
+   Compiling getrandom v0.3.4
+   Compiling itoa v1.0.15
+   Compiling bitflags v2.10.0
+   Compiling num-integer v0.1.46
+   Compiling ryu v1.0.20
+   Compiling serde_json v1.0.145
+   Compiling num-bigint v0.4.6
+   Compiling equivalent v1.0.2
+   Compiling iana-time-zone v0.1.64
+   Compiling version_check v0.9.5
+   Compiling foldhash v0.2.0
+   Compiling allocator-api2 v0.2.21
+   Compiling synstructure v0.13.2
+   Compiling siphasher v1.0.1
+   Compiling phf_shared v0.12.1
+   Compiling hashbrown v0.17.1
+   Compiling zerocopy-derive v0.8.31
+   Compiling zerofrom-derive v0.1.6
+   Compiling zerofrom v0.1.6
+   Compiling yoke-derive v0.8.1
+   Compiling ahash v0.8.12
+   Compiling chrono v0.4.44
+   Compiling stable_deref_trait v1.2.1
+   Compiling chrono-tz v0.10.4
+   Compiling yoke v0.8.1
+   Compiling arrow-schema v58.3.0
+   Compiling phf v0.12.1
+   Compiling zerovec-derive v0.11.2
+   Compiling half v2.7.1
+   Compiling arrow-buffer v58.3.0
+   Compiling arrow-data v58.3.0
+   Compiling num-complex v0.4.6
+   Compiling zerovec v0.11.5
+   Compiling arrow-array v58.3.0
+   Compiling displaydoc v0.2.5
+   Compiling pin-project-lite v0.2.16
+   Compiling find-msvc-tools v0.1.5
+   Compiling futures-core v0.3.31
+   Compiling shlex v1.3.0
+   Compiling futures-sink v0.3.31
+   Compiling tinystr v0.8.2
+   Compiling lexical-util v1.0.7
+   Compiling jobserver v0.1.34
+   Compiling cc v1.2.49
+   Compiling pkg-config v0.3.32
+   Compiling smallvec v1.15.1
+   Compiling litemap v0.8.1
+   Compiling writeable v0.6.2
+   Compiling icu_locale_core v2.1.1
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling arrow-select v58.3.0
+   Compiling zerotrie v0.2.3
+   Compiling potential_utf v0.1.4
+   Compiling icu_normalizer_data v2.1.1
+   Compiling icu_properties_data v2.1.2
+   Compiling icu_collections v2.1.1
+   Compiling icu_provider v2.1.1
+   Compiling futures-channel v0.3.31
+   Compiling tokio-macros v2.7.0
+   Compiling futures-macro v0.3.31
+   Compiling semver v1.0.27
+   Compiling slab v0.4.11
+   Compiling futures-io v0.3.31
+   Compiling futures-task v0.3.31
+   Compiling pin-utils v0.1.0
+   Compiling futures-util v0.3.31
+   Compiling rustc_version v0.4.1
+   Compiling tokio v1.52.3
+   Compiling lexical-write-integer v1.0.6
+   Compiling lexical-parse-integer v1.0.6
+   Compiling zstd-safe v7.2.4
+   Compiling parking_lot_core v0.9.12
+   Compiling lexical-parse-float v1.0.6
+   Compiling lexical-write-float v1.0.6
+   Compiling icu_properties v2.1.2
+   Compiling icu_normalizer v2.1.1
+   Compiling flatbuffers v25.9.23
+   Compiling aho-corasick v1.1.4
+   Compiling scopeguard v1.2.0
+   Compiling regex-syntax v0.8.10
+   Compiling unicode-width v0.2.2
+   Compiling serde v1.0.228
+   Compiling unicode-segmentation v1.12.0
+   Compiling base64 v0.22.1
+   Compiling comfy-table v7.2.1
+   Compiling regex-automata v0.4.13
+   Compiling lock_api v0.4.14
+   Compiling idna_adapter v1.2.1
+   Compiling lexical-core v1.0.6
+   Compiling arrow-ord v58.3.0
+   Compiling serde_derive v1.0.228
+   Compiling atoi v2.0.0
+   Compiling crc32fast v1.5.0
+   Compiling twox-hash v2.1.2
+   Compiling alloc-no-stdlib v2.0.4
+   Compiling thiserror v2.0.17
+   Compiling either v1.15.0
+   Compiling percent-encoding v2.3.2
+   Compiling utf8_iter v1.0.4
+   Compiling idna v1.1.0
+   Compiling form_urlencoded v1.2.2
+   Compiling lz4_flex v0.13.0
+   Compiling alloc-stdlib v0.2.2
+   Compiling arrow-cast v58.3.0
+   Compiling zstd v0.13.3
+   Compiling regex v1.12.2
+   Compiling futures-executor v0.3.31
+   Compiling indexmap v2.14.0
+   Compiling thiserror-impl v2.0.17
+   Compiling tracing-attributes v0.1.31
+   Compiling tracing-core v0.1.35
+   Compiling csv-core v0.1.13
+   Compiling same-file v1.0.6
+   Compiling zlib-rs v0.5.3
+   Compiling snap v1.1.1
+   Compiling paste v1.0.15
+   Compiling getrandom v0.4.2
+   Compiling simdutf8 v0.1.5
+   Compiling walkdir v2.5.0
+   Compiling tracing v0.1.43
+   Compiling csv v1.4.0
+   Compiling libz-rs-sys v0.5.3
+   Compiling futures v0.3.31
+   Compiling arrow-ipc v58.3.0
+   Compiling url v2.5.7
+   Compiling brotli-decompressor v5.0.0
+   Compiling itertools v0.14.0
+   Compiling parking_lot v0.12.5
+   Compiling async-trait v0.1.89
+   Compiling http v1.4.0
+   Compiling ordered-float v2.10.1
+   Compiling byteorder v1.5.0
+   Compiling log v0.4.29
+   Compiling humantime v2.3.0
+   Compiling integer-encoding v3.0.4
+   Compiling thrift v0.17.0
+   Compiling object_store v0.13.2
+   Compiling brotli v8.0.2
+   Compiling flate2 v1.1.5
+   Compiling arrow-csv v58.3.0
+   Compiling arrow-json v58.3.0
+   Compiling arrow-string v58.3.0
+   Compiling arrow-arith v58.3.0
+   Compiling arrow-row v58.3.0
+   Compiling sqlparser_derive v0.5.0
+   Compiling seq-macro v0.3.6
+   Compiling parquet v58.3.0
+   Compiling sqlparser v0.62.0
+   Compiling arrow v58.3.0
+   Compiling uuid v1.23.0
+   Compiling pin-project-internal v1.1.13
+   Compiling pin-project v1.1.13
+   Compiling crossbeam-utils v0.8.21
+   Compiling datafusion-doc v54.0.0
+   Compiling foldhash v0.1.5
+   Compiling rustix v1.1.2
+   Compiling hashbrown v0.15.5
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_core v0.9.3
+   Compiling linux-raw-sys v0.11.0
+   Compiling fixedbitset v0.5.7
+   Compiling petgraph v0.8.3
+   Compiling rand_chacha v0.9.0
+   Compiling fastrand v2.3.0
+   Compiling hashbrown v0.14.5
+   Compiling dashmap v6.1.0
+   Compiling tempfile v3.23.0
+   Compiling datafusion-macros v54.0.0
+   Compiling rand v0.9.2
+   Compiling datafusion-common v54.0.0
+   Compiling hex v0.4.3
+   Compiling target-lexicon v0.13.3
+   Compiling pyo3-build-config v0.28.3
+   Compiling datafusion-common-runtime v54.0.0
+   Compiling glob v0.3.3
+   Compiling datafusion-expr-common v54.0.0
+   Compiling datafusion-physical-expr-common v54.0.0
+   Compiling datafusion-functions-aggregate-common v54.0.0
+   Compiling datafusion-functions-window-common v54.0.0
+   Compiling datafusion-expr v54.0.0
+   Compiling heck v0.5.0
+   Compiling pyo3-macros-backend v0.28.3
+   Compiling pyo3-ffi v0.28.3
+   Compiling anyhow v1.0.100
+   Compiling pyo3 v0.28.3
+   Compiling bigdecimal v0.4.9
+   Compiling utf8parse v0.2.2
+   Compiling anstyle-parse v0.2.7
+   Compiling datafusion-physical-expr v54.0.0
+   Compiling datafusion-execution v54.0.0
+   Compiling datafusion-functions v54.0.0
+   Compiling datafusion-physical-plan v54.0.0
+   Compiling datafusion-session v54.0.0
+   Compiling datafusion-physical-expr-adapter v54.0.0
+   Compiling datafusion-datasource v54.0.0
+   Compiling datafusion-catalog v54.0.0
+   Compiling datafusion-pruning v54.0.0
+   Compiling datafusion-functions-aggregate v54.0.0
+   Compiling pyo3-macros v0.28.3
+   Compiling crossbeam-epoch v0.9.18
+   Compiling tokio-util v0.7.18
+   Compiling rayon-core v1.13.0
+   Compiling anstyle-query v1.1.5
+   Compiling colorchoice v1.0.4
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling anstyle v1.0.13
+   Compiling anstream v0.6.21
+   Compiling tokio-stream v0.1.18
+   Compiling crossbeam-deque v0.8.6
+   Compiling datafusion-functions-nested v54.0.0
+   Compiling fst v0.4.7
+   Compiling clap_lex v0.7.6
+   Compiling strsim v0.11.1
+   Compiling clap_builder v4.5.53
+   Compiling datafusion-sql v54.0.0
+   Compiling datafusion-functions-table v54.0.0
+   Compiling datafusion-catalog-listing v54.0.0
+   Compiling datafusion-datasource-json v54.0.0
+   Compiling datafusion-datasource-parquet v54.0.0
+   Compiling datafusion-physical-optimizer v54.0.0
+   Compiling datafusion-datasource-csv v54.0.0
+   Compiling datafusion-datasource-arrow v54.0.0
+   Compiling datafusion-optimizer v54.0.0
+   Compiling datafusion-functions-window v54.0.0
+   Compiling clap_derive v4.5.49
+   Compiling clap v4.5.53
+   Compiling datafusion v54.0.0
+   Compiling rayon v1.11.0
+   Compiling pyo3-async-runtimes v0.28.0
+   Compiling arrow-pyarrow v58.3.0
+   Compiling pyo3-async-runtimes-macros v0.28.0
+   Compiling memmap2 v0.9.9
+   Compiling pdq v0.1.0 (/data/pdq)
+    Finished `release` profile [optimized] target(s) in 14m 02s
+Downloading cpython-3.13.14-linux-x86_64-gnu (download) (33.3MiB)
+ Downloaded cpython-3.13.14-linux-x86_64-gnu (download)
+Using CPython 3.13.14
+Creating virtual environment at: .venv
+Resolved 36 packages in 0.66ms
+   Building pdq @ file:///data/pdq
+Downloading fonttools (4.7MiB)
+Downloading pillow (6.8MiB)
+Downloading matplotlib (9.6MiB)
+Downloading maturin (10.1MiB)
+Downloading pygments (1.2MiB)
+Downloading pyarrow (45.5MiB)
+Downloading kiwisolver (1.4MiB)
+Downloading datafusion (36.3MiB)
+Downloading ruff (13.6MiB)
+Downloading numpy (15.6MiB)
+Downloading polars-runtime-32 (42.4MiB)
+Downloading duckdb (20.5MiB)
+Downloading uv (21.2MiB)
+ Downloaded kiwisolver
+ Downloaded pygments
+ Downloaded pillow
+ Downloaded fonttools
+ Downloaded maturin
+ Downloaded ruff
+ Downloaded uv
+ Downloaded matplotlib
+ Downloaded duckdb
+ Downloaded datafusion
+ Downloaded polars-runtime-32
+ Downloaded numpy
+ Downloaded pyarrow
+      Built pdq @ file:///data/pdq
+Prepared 25 packages in 53.05s
+Installed 25 packages in 20ms
+ + contourpy==1.3.3
+ + cycler==0.12.1
+ + datafusion==53.0.0
+ + duckdb==1.5.4
+ + fonttools==4.63.0
+ + iniconfig==2.3.0
+ + kiwisolver==1.5.0
+ + matplotlib==3.11.0
+ + maturin==1.14.0
+ + numpy==2.4.0
+ + packaging==25.0
+ + pdq==0.1.0 (from file:///data/pdq)
+ + pillow==12.2.0
+ + pluggy==1.6.0
+ + polars==1.36.1
+ + polars-runtime-32==1.36.1
+ + pyarrow==22.0.0
+ + pygments==2.19.2
+ + pyparsing==3.3.2
+ + pytest==9.0.2
+ + pytest-asyncio==1.3.0
+ + python-dateutil==2.9.0.post0
+ + ruff==0.14.10
+ + six==1.17.0
+ + uv==0.9.18
+🍹 Building a mixed python/rust project
+🐍 Found CPython 3.13 at /data/pdq/.venv/bin/python
+🔗 Found pyo3 bindings with abi3-py3.10 support
+📡 Using build options features, locked from pyproject.toml
+Audited 3 packages in 39ms
+Resolved 8 packages in 74ms
+Audited 8 packages in 0.10ms
+   Compiling pyo3-build-config v0.28.3
+   Compiling pyo3-ffi v0.28.3
+   Compiling pyo3-macros-backend v0.28.3
+   Compiling pyo3 v0.28.3
+   Compiling pyo3-macros v0.28.3
+   Compiling pyo3-async-runtimes v0.28.0
+   Compiling arrow-pyarrow v58.3.0
+   Compiling pdq v0.1.0 (/data/pdq)
+    Finished `release` profile [optimized] target(s) in 51.00s
+📦 Built wheel for abi3 Python ≥ 3.10 to /tmp/.tmpBKwhjb/pdq-0.1.0-cp310-abi3-linux_x86_64.whl
+✏️ Setting installed package as editable
+🛠 Installed pdq-0.1.0
+==> [7/8] Generate corpora + FST indexes (ladder=10,100,1000)
+Generating corpus: 10 files -> misc/shootout/corpora/files_10
+  manifest: misc/shootout/corpora/files_10/manifest.json  (corpus 8.2s, index 50.2s)
+Generating corpus: 100 files -> misc/shootout/corpora/files_100
+  manifest: misc/shootout/corpora/files_100/manifest.json  (corpus 81.8s, index 514.0s)
+Generating corpus: 1000 files -> misc/shootout/corpora/files_1000
+  manifest: misc/shootout/corpora/files_1000/manifest.json  (corpus 817.7s, index 5418.3s)
+wrote misc/shootout/results/build_time.json
+    corpus on disk:
+723M	misc/shootout/corpora/files_10
+7.1G	misc/shootout/corpora/files_100
+71G	misc/shootout/corpora/files_1000
+==> Layer 1: pruning cost (Rust micro-bench)
+   Compiling serde v1.0.228
+   Compiling url v2.5.7
+   Compiling object_store v0.13.2
+   Compiling parquet v58.3.0
+   Compiling datafusion-common v54.0.0
+   Compiling datafusion-expr-common v54.0.0
+   Compiling datafusion-physical-expr-common v54.0.0
+   Compiling datafusion-functions-window-common v54.0.0
+   Compiling datafusion-functions-aggregate-common v54.0.0
+   Compiling datafusion-expr v54.0.0
+   Compiling datafusion-physical-expr v54.0.0
+   Compiling datafusion-execution v54.0.0
+   Compiling datafusion-functions v54.0.0
+   Compiling datafusion-functions-aggregate v54.0.0
+   Compiling datafusion-physical-plan v54.0.0
+   Compiling datafusion-physical-expr-adapter v54.0.0
+   Compiling datafusion-session v54.0.0
+   Compiling datafusion-datasource v54.0.0
+   Compiling datafusion-functions-nested v54.0.0
+   Compiling datafusion-pruning v54.0.0
+   Compiling datafusion-catalog v54.0.0
+   Compiling datafusion-physical-optimizer v54.0.0
+   Compiling datafusion-datasource-parquet v54.0.0
+   Compiling datafusion-catalog-listing v54.0.0
+   Compiling datafusion-functions-table v54.0.0
+   Compiling datafusion-sql v54.0.0
+   Compiling datafusion-datasource-arrow v54.0.0
+   Compiling datafusion-datasource-csv v54.0.0
+   Compiling datafusion-datasource-json v54.0.0
+   Compiling datafusion-functions-window v54.0.0
+   Compiling datafusion-optimizer v54.0.0
+   Compiling datafusion v54.0.0
+   Compiling pdq v0.1.0 (/data/pdq)
+    Finished `bench` profile [optimized] target(s) in 10m 54s
+     Running benches/pruning_cost.rs (target/release/deps/pruning_cost-f163bb8020257672)
+done n=10
+done n=100
+done n=1000
+wrote "misc/shootout/results/pruning_cost.json" (12 rows)
+==> Layer 2: end-to-end (warm; in-process pdq, project venv)
+Uninstalled 1 package in 3ms
+Installed 1 package in 9ms
+threads=4 iters=30 warmup=5 cold=False contestants=['polars_fullscan', 'duckdb_bloom', 'datafusion_bloom', 'pdq']
+n=10 polars_fullscan: median 34.17 ms (p25 33.62 / p75 35.01) rows=1 ok=True
+n=10 duckdb_bloom: median 7.25 ms (p25 7.06 / p75 7.36) rows=1 ok=True
+n=10 datafusion_bloom: median 13.22 ms (p25 10.41 / p75 15.07) rows=1 ok=True
+n=10 pdq: median 6.53 ms (p25 6.16 / p75 6.74) rows=1 ok=True
+n=100 polars_fullscan: median 333.17 ms (p25 331.09 / p75 334.94) rows=1 ok=True
+n=100 duckdb_bloom: median 28.56 ms (p25 28.19 / p75 29.10) rows=1 ok=True
+n=100 datafusion_bloom: median 54.32 ms (p25 52.65 / p75 57.55) rows=1 ok=True
+n=100 pdq: median 6.55 ms (p25 6.27 / p75 6.92) rows=1 ok=True
+n=1000 polars_fullscan: median 3300.56 ms (p25 3291.15 / p75 3309.96) rows=1 ok=True
+n=1000 duckdb_bloom: median 227.66 ms (p25 225.62 / p75 230.03) rows=1 ok=True
+n=1000 datafusion_bloom: median 528.27 ms (p25 522.23 / p75 536.60) rows=1 ok=True
+n=1000 pdq: median 7.98 ms (p25 7.74 / p75 8.34) rows=1 ok=True
+wrote misc/shootout/results/e2e.json
+==> Layer 2: end-to-end (cold; per-sample sudo drop_caches)
+threads=4 iters=5 warmup=0 cold=True contestants=['polars_fullscan', 'duckdb_bloom', 'datafusion_bloom', 'pdq']
+n=10 polars_fullscan: median 100.57 ms (p25 98.88 / p75 103.32) rows=1 ok=True
+n=10 duckdb_bloom: median 16.16 ms (p25 15.60 / p75 17.25) rows=1 ok=True
+n=10 datafusion_bloom: median 26.01 ms (p25 25.74 / p75 26.79) rows=1 ok=True
+n=10 pdq: median 15.39 ms (p25 15.14 / p75 15.80) rows=1 ok=True
+n=100 polars_fullscan: median 2133.16 ms (p25 1956.21 / p75 2135.17) rows=1 ok=True
+n=100 duckdb_bloom: median 43.33 ms (p25 41.72 / p75 43.49) rows=1 ok=True
+n=100 datafusion_bloom: median 265.32 ms (p25 175.77 / p75 318.68) rows=1 ok=True
+n=100 pdq: median 14.09 ms (p25 13.70 / p75 14.99) rows=1 ok=True
+n=1000 polars_fullscan: median 22220.53 ms (p25 21979.99 / p75 22221.95) rows=1 ok=True
+n=1000 duckdb_bloom: median 269.89 ms (p25 268.49 / p75 272.50) rows=1 ok=True
+n=1000 datafusion_bloom: median 3934.46 ms (p25 3913.61 / p75 3947.53) rows=1 ok=True
+n=1000 pdq: median 15.48 ms (p25 14.83 / p75 16.85) rows=1 ok=True
+wrote misc/shootout/results/e2e_cold.json
+==> [8/8] Render report
+Downloading numpy (15.9MiB)
+ Downloaded numpy
+Installed 11 packages in 23ms
+wrote misc/shootout/results/REPORT.md and misc/shootout/results/pruning_scaling.png
+
+================= DONE =================
+Results dir : /data/pdq/misc/shootout/results
+Tarball     : /home/ubuntu/shootout-results.tar.gz
+
+----- REPORT.md -----
+# Shootout Results
+## Layer 1: pruning cost
+| n_files | mechanism | workload | median_ms | bytes_read | matched_files |
+|---|---|---|---|---|---|
+| 10 | bloom | multi | 15.416 | 31534700 | 17 |
+| 10 | pdq_fst | multi | 0.041 | 63550799 | 10 |
+| 10 | bloom | single | 15.452 | 31534700 | 4 |
+| 10 | pdq_fst | single | 0.017 | 63550799 | 1 |
+| 100 | bloom | multi | 158.070 | 315346795 | 847 |
+| 100 | pdq_fst | multi | 2.563 | 635777026 | 100 |
+| 100 | bloom | single | 156.090 | 315346795 | 12 |
+| 100 | pdq_fst | single | 0.077 | 635777026 | 1 |
+| 1000 | bloom | multi | 1723.559 | 3153467148 | 79855 |
+| 1000 | pdq_fst | multi | 263.207 | 6356943791 | 1196 |
+| 1000 | bloom | single | 1494.609 | 3153467148 | 72 |
+| 1000 | pdq_fst | single | 0.541 | 6356943791 | 1 |
+
+## Layer 2: end-to-end (warm)
+| n_files | contestant | rows | correct | median ms | p25–p75 ms |
+|---|---|---|---|---|---|
+| 10 | datafusion_bloom | 1 | True | 13.22 | 10.41–15.07 |
+| 10 | duckdb_bloom | 1 | True | 7.25 | 7.06–7.36 |
+| 10 | pdq | 1 | True | 6.53 | 6.16–6.74 |
+| 10 | polars_fullscan | 1 | True | 34.17 | 33.62–35.01 |
+| 100 | datafusion_bloom | 1 | True | 54.32 | 52.65–57.55 |
+| 100 | duckdb_bloom | 1 | True | 28.56 | 28.19–29.10 |
+| 100 | pdq | 1 | True | 6.55 | 6.27–6.92 |
+| 100 | polars_fullscan | 1 | True | 333.17 | 331.09–334.94 |
+| 1000 | datafusion_bloom | 1 | True | 528.27 | 522.23–536.60 |
+| 1000 | duckdb_bloom | 1 | True | 227.66 | 225.62–230.03 |
+| 1000 | pdq | 1 | True | 7.98 | 7.74–8.34 |
+| 1000 | polars_fullscan | 1 | True | 3300.56 | 3291.15–3309.96 |
+
+## Layer 2: end-to-end (cold)
+| n_files | contestant | rows | correct | median ms | p25–p75 ms |
+|---|---|---|---|---|---|
+| 10 | datafusion_bloom | 1 | True | 26.01 | 25.74–26.79 |
+| 10 | duckdb_bloom | 1 | True | 16.16 | 15.60–17.25 |
+| 10 | pdq | 1 | True | 15.39 | 15.14–15.80 |
+| 10 | polars_fullscan | 1 | True | 100.57 | 98.88–103.32 |
+| 100 | datafusion_bloom | 1 | True | 265.32 | 175.77–318.68 |
+| 100 | duckdb_bloom | 1 | True | 43.33 | 41.72–43.49 |
+| 100 | pdq | 1 | True | 14.09 | 13.70–14.99 |
+| 100 | polars_fullscan | 1 | True | 2133.16 | 1956.21–2135.17 |
+| 1000 | datafusion_bloom | 1 | True | 3934.46 | 3913.61–3947.53 |
+| 1000 | duckdb_bloom | 1 | True | 269.89 | 268.49–272.50 |
+| 1000 | pdq | 1 | True | 15.48 | 14.83–16.85 |
+| 1000 | polars_fullscan | 1 | True | 22220.53 | 21979.99–22221.95 |
+
+## Build cost (corpus write + FST index)
+| n_files | corpus write (s) | FST build (s) |
+|---|---|---|
+| 10 | 8.2 | 50.2 |
+| 100 | 81.8 | 514.0 |
+| 1000 | 817.7 | 5418.3 |
+
+Pull results to your laptop, then TERMINATE the instance (NVMe is wiped on stop/terminate):
+  scp -i <key.pem> ubuntu@<public-ip>:/home/ubuntu/shootout-results.tar.gz .
+EXIT_CODE=0

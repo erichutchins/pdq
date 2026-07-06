@@ -13,7 +13,6 @@ from pathlib import Path
 import subprocess
 import pyarrow as pa
 import pyarrow.parquet as pq
-import numpy as np
 
 def run_command(cmd):
     print(f"Running: {' '.join(cmd)}")
