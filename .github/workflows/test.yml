@@ -34,7 +34,7 @@ jobs:
   python:
     name: Python bindings (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -60,8 +60,6 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          key: ${{ matrix.python-version }}
       - name: Sync environment
         run: uv sync
       - name: Build bindings
