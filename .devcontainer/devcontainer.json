@@ -1,32 +1,38 @@
 {
-    "name": "Dev Container",
-    "image": "mcr.microsoft.com/devcontainers/rust:latest",
-    "features": {
-        "ghcr.io/devcontainers-extra/features/hyperfine:1": {},
-        "ghcr.io/devcontainers-extra/features/ruff:1": {},
-        "ghcr.io/devcontainers-extra/features/uv:1": {}
+  "name": "Dev Container",
+  "image": "mcr.microsoft.com/devcontainers/rust:2.0.14-trixie@sha256:0ef7110175191659b975c1b89217217a093667851bde031b48f8ceab9cd1be1f",
+  "features": {
+    "ghcr.io/devcontainers-extra/features/hyperfine:1": {},
+    "ghcr.io/devcontainers-extra/features/ruff:1": {},
+    "ghcr.io/devcontainers-extra/features/uv:1": {},
+    "ghcr.io/devcontainers/features/sshd:1": {},
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {},
+  },
+  "mounts": [
+    "source=pdq-cargo-registry,target=/usr/local/cargo/registry,type=volume",
+    "source=pdq-cargo-target,target=${containerWorkspaceFolder}/target,type=volume",
+  ],
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "tamasfe.even-better-toml",
+        "GitHub.copilot",
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "${workspaceRoot}/.venv/bin/python",
+        "python.testing.pytestEnabled": true,
+        "rust-analyzer.cargo.targetDir": true,
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+          "source.fixAll.ruff": "explicit",
+          "source.organizeImports.ruff": "explicit",
+        },
+      },
     },
-    "postCreateCommand": "bash .devcontainer/post-create.sh",
-    "customizations": {
-        "vscode": {
-            "extensions": [
-                "rust-lang.rust-analyzer",
-                "ms-python.python",
-                "ms-python.vscode-pylance",
-                "charliermarsh.ruff",
-                "tamasfe.even-better-toml",
-                "GitHub.copilot"
-            ],
-            "settings": {
-                "python.defaultInterpreterPath": "${workspaceRoot}/.venv/bin/python",
-                "python.testing.pytestEnabled": true,
-                "rust-analyzer.cargo.targetDir": true,
-                "editor.formatOnSave": true,
-                "editor.codeActionsOnSave": {
-                    "source.fixAll.ruff": "explicit",
-                    "source.organizeImports.ruff": "explicit"
-                }
-            }
-        }
-    }
+  },
 }

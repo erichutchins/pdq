@@ -31,6 +31,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use futures::future::{BoxFuture, FutureExt};
 use object_store::ObjectStore;
+use object_store::path::Path as ObjectStorePath;
 use rayon::prelude::*;
 
 use crate::calculate_file_hash;
@@ -458,7 +459,11 @@ impl TableProvider for PdqTableProvider {
             // Skip files removed since indexing (canonicalize fails). Queries
             // tolerate stale indexes whose Parquet files are gone; run `index
             // --prune` to drop the orphan indexes.
-            let Ok(canonical_path) = std::fs::canonicalize(file_path) else {
+            //
+            // dunce::canonicalize (not std::fs::canonicalize) because on Windows
+            // std's version prefixes paths with the `\\?\` verbatim form, which
+            // DataFusion's file:// URL handling can't round-trip.
+            let Ok(canonical_path) = dunce::canonicalize(file_path) else {
                 continue;
             };
             let file_size = std::fs::metadata(&canonical_path)
@@ -477,9 +482,15 @@ impl TableProvider for PdqTableProvider {
                 continue;
             }
 
-            let partitioned_file =
-                PartitionedFile::new(canonical_path.display().to_string(), file_size)
-                    .with_extension(access_plan);
+            // object_store's `file://` scheme expects `/`-delimited, percent-decoded
+            // paths, not the OS-native (backslash-on-Windows) form `display()` gives
+            // us — otherwise the backslashes get percent-encoded as literal filename
+            // characters and then re-encoded again downstream, mangling the URL.
+            let Ok(object_store_path) = ObjectStorePath::from_absolute_path(&canonical_path) else {
+                continue;
+            };
+            let partitioned_file = PartitionedFile::new(object_store_path.to_string(), file_size)
+                .with_extension(access_plan);
             builder = builder.with_file(partitioned_file);
         }
 

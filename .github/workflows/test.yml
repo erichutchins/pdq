@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: true
@@ -13,11 +16,14 @@ jobs:
   rust:
     name: Rust (fmt, clippy, test)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Install rustfmt and clippy
         run: rustup component add rustfmt clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -26,16 +32,45 @@ jobs:
         run: cargo test
 
   python:
-    name: Python bindings (maturin, pytest)
-    runs-on: ubuntu-latest
+    name: Python bindings (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.10"
+            timeout: 20
+          - os: ubuntu-latest
+            python-version: "3.11"
+            timeout: 20
+          - os: ubuntu-latest
+            python-version: "3.12"
+            timeout: 20
+          - os: ubuntu-latest
+            python-version: "3.13"
+            timeout: 20
+          - os: macos-latest
+            python-version: "3.13"
+            timeout: 25
+          - os: windows-latest
+            python-version: "3.13"
+            # MSVC + this crate's dependency tree (DataFusion/Arrow) compiles
+            # noticeably slower than Linux/macOS on a cold cache; a bare
+            # `uv sync` alone took 28m on an unwarmed cache.
+            timeout: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          python-version: "3.13"
-      - uses: Swatinem/rust-cache@v2
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Sync environment
-        run: uv sync
+        run: uv sync --no-install-project
       - name: Build bindings
         run: uv run maturin develop
       - name: Pytest
