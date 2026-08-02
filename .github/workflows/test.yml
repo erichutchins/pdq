@@ -34,23 +34,32 @@ jobs:
   python:
     name: Python bindings (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             python-version: "3.10"
+            timeout: 20
           - os: ubuntu-latest
             python-version: "3.11"
+            timeout: 20
           - os: ubuntu-latest
             python-version: "3.12"
+            timeout: 20
           - os: ubuntu-latest
             python-version: "3.13"
+            timeout: 20
           - os: macos-latest
             python-version: "3.13"
+            timeout: 25
           - os: windows-latest
             python-version: "3.13"
+            # MSVC + this crate's dependency tree (DataFusion/Arrow) compiles
+            # noticeably slower than Linux/macOS on a cold cache; a bare
+            # `uv sync` alone took 28m on an unwarmed cache.
+            timeout: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -61,7 +70,7 @@ jobs:
           enable-cache: true
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Sync environment
-        run: uv sync
+        run: uv sync --no-install-project
       - name: Build bindings
         run: uv run maturin develop
       - name: Pytest
