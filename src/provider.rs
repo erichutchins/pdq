@@ -458,7 +458,11 @@ impl TableProvider for PdqTableProvider {
             // Skip files removed since indexing (canonicalize fails). Queries
             // tolerate stale indexes whose Parquet files are gone; run `index
             // --prune` to drop the orphan indexes.
-            let Ok(canonical_path) = std::fs::canonicalize(file_path) else {
+            //
+            // dunce::canonicalize (not std::fs::canonicalize) because on Windows
+            // std's version prefixes paths with the `\\?\` verbatim form, which
+            // DataFusion's file:// URL handling can't round-trip.
+            let Ok(canonical_path) = dunce::canonicalize(file_path) else {
                 continue;
             };
             let file_size = std::fs::metadata(&canonical_path)
