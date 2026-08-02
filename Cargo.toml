@@ -1,0 +1,67 @@
+[package]
+name = "pdq"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/erichutchins/pdq"
+readme = "README.md"
+
+[lib]
+name = "pdq"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "pdq"
+path = "src/bin/pdq.rs"
+
+[dependencies]
+arrow-pyarrow = "58.3.0"
+async-trait = "0.1"
+clap = { version = "4.0", features = ["derive"] }
+fst = "0.4.7"
+rayon = "1.10"
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "fs"] }
+# PyO3 dependencies for Python bindings
+pyo3 = { version = "0.28", features = [
+    "abi3-py310",
+    "anyhow",
+] }
+pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
+pyo3-async-runtimes-macros = { version = "0.28" }
+datafusion = { default-features = false, features = [
+    "parquet",
+    "sql"
+], version = "54.0.0" }
+datafusion-common = "54.0.0"
+datafusion-physical-expr = "54.0.0"
+datafusion-expr = "54.0.0"
+walkdir = "2.5"
+memmap2 = "0.9"
+futures = "0.3"
+object_store = "0.13.2"
+bytes = "1.10"
+anyhow = "1.0"
+
+
+[features]
+# Benchmark-only code (bloom-filter probing, counting reader). Keeps this
+# code out of normal library builds and shipped wheels.
+shootout = []
+
+[[bench]]
+name = "pruning_cost"
+harness = false
+# Only build this bench when the feature is on, so plain `cargo test` / CI
+# (which compile bench targets) don't fail on the feature-gated bloom_probe.
+required-features = ["shootout"]
+
+[dev-dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3.8"
+
+
+# Python-specific build configuration
+[package.metadata.maturin]
+name = "pdq"
+python-source = "python"

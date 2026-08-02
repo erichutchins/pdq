@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="352" viewBox="0 0 880 352" role="img" aria-labelledby="t">
+  <title id="t">The path each mechanism takes to an authoritative negative finding: min/max stats require a full scan, a bloom filter requires data reads to clear its false-positive tail, PDQ's FST reaches a conclusive NO in a single index lookup with zero Parquet I/O.</title>
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L8 4 L0 8 z" fill="#898781"/>
+    </marker>
+  </defs>
+  <rect x="0.5" y="0.5" width="879" height="351" rx="8" fill="#fcfcfb" stroke="rgba(11,11,11,0.10)"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="24" y="34" font-size="15" font-weight="700" fill="#0b0b0b">Reaching an authoritative &#8220;not present&#8221;</text>
+    <text x="24" y="54" font-size="12.5" fill="#52514e">Query an indicator that appears nowhere in the corpus — the work each mechanism does before NO is sound</text>
+
+    <!-- Row A: min/max stats -->
+    <g>
+      <text x="24" y="113" font-size="13" font-weight="700" fill="#0b0b0b">Min/max stats</text>
+      <text x="24" y="129" font-size="11" fill="#52514e">NO requires scanning</text>
+      <text x="24" y="142" font-size="11" fill="#52514e">everything first</text>
+
+      <rect x="200" y="96" width="190" height="46" rx="6" fill="none" stroke="#c3c2b7"/>
+      <text x="295" y="115" font-size="11.5" fill="#0b0b0b" text-anchor="middle">footer stats: every</text>
+      <text x="295" y="130" font-size="11.5" fill="#0b0b0b" text-anchor="middle">[min,&#8201;max] spans the value</text>
+      <line x1="394" y1="119" x2="416" y2="119" stroke="#898781" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="420" y="96" width="220" height="46" rx="6" fill="rgba(236,131,90,0.18)" stroke="#ec835a" stroke-width="1.5"/>
+      <text x="530" y="115" font-size="11.5" fill="#0b0b0b" text-anchor="middle">decode + scan</text>
+      <text x="530" y="130" font-size="11.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">ALL row groups</text>
+      <line x1="644" y1="119" x2="786" y2="119" stroke="#898781" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="790" y="104" width="56" height="30" rx="15" fill="#0b0b0b"/>
+      <text x="818" y="124" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">NO</text>
+      <text x="200" y="160" font-size="11.5" fill="#52514e">cost: a full-corpus data read before &#8220;no&#8221; is sound</text>
+    </g>
+
+    <!-- Row B: bloom filter -->
+    <g>
+      <text x="24" y="203" font-size="13" font-weight="700" fill="#0b0b0b">Bloom filter</text>
+      <text x="24" y="219" font-size="11" fill="#52514e">cheap &#8216;no&#8217;, but every</text>
+      <text x="24" y="232" font-size="11" fill="#52514e">&#8216;maybe&#8217; must be cleared</text>
+
+      <rect x="200" y="186" width="170" height="46" rx="6" fill="none" stroke="#c3c2b7"/>
+      <text x="285" y="205" font-size="11.5" fill="#0b0b0b" text-anchor="middle">probe every file&#8217;s</text>
+      <text x="285" y="220" font-size="11.5" fill="#0b0b0b" text-anchor="middle">bloom filters</text>
+      <line x1="374" y1="209" x2="396" y2="209" stroke="#898781" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="400" y="186" width="180" height="46" rx="6" fill="none" stroke="#c3c2b7"/>
+      <text x="490" y="205" font-size="11.5" fill="#0b0b0b" text-anchor="middle">most: &#8216;definitely no&#8217;;</text>
+      <text x="490" y="220" font-size="11.5" fill="#0b0b0b" text-anchor="middle">some: &#8216;maybe&#8217; (FP tail)</text>
+      <line x1="584" y1="209" x2="606" y2="209" stroke="#898781" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="610" y="186" width="150" height="46" rx="6" fill="rgba(236,131,90,0.18)" stroke="#ec835a" stroke-width="1.5"/>
+      <text x="685" y="205" font-size="11.5" fill="#0b0b0b" text-anchor="middle">read data to clear</text>
+      <text x="685" y="220" font-size="11.5" fill="#0b0b0b" text-anchor="middle">each &#8216;maybe&#8217;</text>
+      <line x1="764" y1="209" x2="786" y2="209" stroke="#898781" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="790" y="194" width="56" height="30" rx="15" fill="#0b0b0b"/>
+      <text x="818" y="214" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">NO</text>
+      <text x="200" y="250" font-size="11.5" fill="#52514e">cost: every footer read + a data read for every false positive</text>
+    </g>
+
+    <!-- Row C: PDQ FST -->
+    <g>
+      <text x="24" y="293" font-size="13" font-weight="700" fill="#0b0b0b">PDQ FST sidecar</text>
+      <text x="24" y="309" font-size="11" fill="#52514e">absence in the index</text>
+      <text x="24" y="322" font-size="11" fill="#52514e">is the finding</text>
+
+      <rect x="200" y="276" width="190" height="46" rx="6" fill="rgba(42,120,214,0.15)" stroke="#2a78d6" stroke-width="1.5"/>
+      <text x="295" y="295" font-size="11.5" fill="#0b0b0b" text-anchor="middle">one FST lookup:</text>
+      <text x="295" y="310" font-size="11.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">key absent &#8594; done</text>
+      <line x1="394" y1="299" x2="416" y2="299" stroke="#898781" stroke-width="1.5" marker-end="url(#arr)"/>
+      <rect x="420" y="284" width="56" height="30" rx="15" fill="#0b0b0b"/>
+      <text x="448" y="304" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">NO</text>
+      <text x="500" y="303" font-size="11.5" font-style="italic" fill="#898781">zero footers, zero Parquet I/O — index absence is exact</text>
+      <text x="200" y="340" font-size="11.5" fill="#52514e">cost: one mmap&#8217;d index lookup</text>
+    </g>
+  </g>
+</svg>

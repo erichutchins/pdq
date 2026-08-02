@@ -1,0 +1,32 @@
+{
+    "name": "Dev Container",
+    "image": "mcr.microsoft.com/devcontainers/rust:latest",
+    "features": {
+        "ghcr.io/devcontainers-extra/features/hyperfine:1": {},
+        "ghcr.io/devcontainers-extra/features/ruff:1": {},
+        "ghcr.io/devcontainers-extra/features/uv:1": {}
+    },
+    "postCreateCommand": "bash .devcontainer/post-create.sh",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "rust-lang.rust-analyzer",
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "charliermarsh.ruff",
+                "tamasfe.even-better-toml",
+                "GitHub.copilot"
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "${workspaceRoot}/.venv/bin/python",
+                "python.testing.pytestEnabled": true,
+                "rust-analyzer.cargo.targetDir": true,
+                "editor.formatOnSave": true,
+                "editor.codeActionsOnSave": {
+                    "source.fixAll.ruff": "explicit",
+                    "source.organizeImports.ruff": "explicit"
+                }
+            }
+        }
+    }
+}
