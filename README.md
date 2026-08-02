@@ -1,4 +1,4 @@
-# PDQ -- Pretty Darn Quick
+# pdq
 
 **Fast, exact Parquet search with FST sidecar indexes and DataFusion row-group pruning.**
 
