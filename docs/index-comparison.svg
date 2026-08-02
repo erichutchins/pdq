@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="352" viewBox="0 0 880 352" role="img" aria-labelledby="t">
+  <title id="t">Comparison of Parquet min/max statistics, bloom filters, and PDQ's FST sidecar for row-group pruning on an unsorted high-cardinality column.</title>
+  <rect x="0.5" y="0.5" width="879" height="351" rx="8" fill="#fcfcfb" stroke="rgba(11,11,11,0.10)"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="24" y="34" font-size="15" font-weight="700" fill="#0b0b0b">Row-group pruning on an unsorted, high-cardinality column</text>
+    <text x="24" y="54" font-size="12.5" fill="#52514e">Same query in all three rows: exact match for a value that lives only in row group 5 of 8</text>
+
+    <!-- target annotation over column rg5 (center x = 548) -->
+    <text x="548" y="88" font-size="11" font-weight="600" fill="#0b0b0b" text-anchor="middle">target value is here</text>
+    <text x="548" y="100" font-size="9" fill="#0b0b0b" text-anchor="middle">&#9660;</text>
+
+    <!-- column headers -->
+    <g font-size="10.5" fill="#898781" text-anchor="middle">
+      <text x="228" y="110">rg0</text>
+      <text x="292" y="110">rg1</text>
+      <text x="356" y="110">rg2</text>
+      <text x="420" y="110">rg3</text>
+      <text x="484" y="110">rg4</text>
+      <text x="548" y="110" fill="#0b0b0b" font-weight="700">rg5</text>
+      <text x="612" y="110">rg6</text>
+      <text x="676" y="110">rg7</text>
+    </g>
+
+    <!-- Row A: min/max stats — nothing pruned -->
+    <g>
+      <text x="24" y="134" font-size="13" font-weight="700" fill="#0b0b0b">Min/max stats</text>
+      <text x="24" y="150" font-size="11" fill="#52514e">every range spans the</text>
+      <text x="24" y="163" font-size="11" fill="#52514e">target — prunes nothing</text>
+      <g>
+        <rect x="200" y="118" width="56" height="44" rx="4" fill="rgba(236,131,90,0.18)" stroke="#ec835a" stroke-width="1.5"/>
+        <rect x="264" y="118" width="56" height="44" rx="4" fill="rgba(236,131,90,0.18)" stroke="#ec835a" stroke-width="1.5"/>
+        <rect x="328" y="118" width="56" height="44" rx="4" fill="rgba(236,131,90,0.18)" stroke="#ec835a" stroke-width="1.5"/>
+        <rect x="392" y="118" width="56" height="44" rx="4" fill="rgba(236,131,90,0.18)" stroke="#ec835a" stroke-width="1.5"/>
+        <rect x="456" y="118" width="56" height="44" rx="4" fill="rgba(236,131,90,0.18)" stroke="#ec835a" stroke-width="1.5"/>
+        <rect x="520" y="118" width="56" height="44" rx="4" fill="rgba(12,163,12,0.18)" stroke="#0ca30c" stroke-width="1.5"/>
+        <rect x="584" y="118" width="56" height="44" rx="4" fill="rgba(236,131,90,0.18)" stroke="#ec835a" stroke-width="1.5"/>
+        <rect x="648" y="118" width="56" height="44" rx="4" fill="rgba(236,131,90,0.18)" stroke="#ec835a" stroke-width="1.5"/>
+      </g>
+      <g font-size="10.5" fill="#0b0b0b" text-anchor="middle">
+        <text x="228" y="144">read</text>
+        <text x="292" y="144">read</text>
+        <text x="356" y="144">read</text>
+        <text x="420" y="144">read</text>
+        <text x="484" y="144">read</text>
+        <text x="548" y="144" font-weight="700">hit</text>
+        <text x="612" y="144">read</text>
+        <text x="676" y="144">read</text>
+      </g>
+      <text x="716" y="132" font-size="12.5" font-weight="700" fill="#0b0b0b">0 of 8 pruned</text>
+      <text x="716" y="148" font-size="11.5" fill="#52514e">all 8 row groups</text>
+      <text x="716" y="162" font-size="11.5" fill="#52514e">decoded for 1 hit</text>
+    </g>
+
+    <!-- Row B: bloom filter — prunes most, false positive remains -->
+    <g>
+      <text x="24" y="202" font-size="13" font-weight="700" fill="#0b0b0b">Bloom filter</text>
+      <text x="24" y="218" font-size="11" fill="#52514e">&#8216;probably yes&#8217; needs a</text>
+      <text x="24" y="231" font-size="11" fill="#52514e">data read to confirm</text>
+      <g>
+        <rect x="200" y="186" width="56" height="44" rx="4" fill="none" stroke="#c3c2b7" stroke-dasharray="3 3"/>
+        <rect x="264" y="186" width="56" height="44" rx="4" fill="none" stroke="#c3c2b7" stroke-dasharray="3 3"/>
+        <rect x="328" y="186" width="56" height="44" rx="4" fill="rgba(236,131,90,0.18)" stroke="#ec835a" stroke-width="1.5"/>
+        <rect x="392" y="186" width="56" height="44" rx="4" fill="none" stroke="#c3c2b7" stroke-dasharray="3 3"/>
+        <rect x="456" y="186" width="56" height="44" rx="4" fill="none" stroke="#c3c2b7" stroke-dasharray="3 3"/>
+        <rect x="520" y="186" width="56" height="44" rx="4" fill="rgba(12,163,12,0.18)" stroke="#0ca30c" stroke-width="1.5"/>
+        <rect x="584" y="186" width="56" height="44" rx="4" fill="none" stroke="#c3c2b7" stroke-dasharray="3 3"/>
+        <rect x="648" y="186" width="56" height="44" rx="4" fill="none" stroke="#c3c2b7" stroke-dasharray="3 3"/>
+      </g>
+      <g font-size="10" fill="#898781" text-anchor="middle">
+        <text x="228" y="211">pruned</text>
+        <text x="292" y="211">pruned</text>
+        <text x="420" y="211">pruned</text>
+        <text x="484" y="211">pruned</text>
+        <text x="612" y="211">pruned</text>
+        <text x="676" y="211">pruned</text>
+      </g>
+      <g font-size="10" fill="#0b0b0b" text-anchor="middle">
+        <text x="356" y="206">read</text>
+        <text x="356" y="218" font-weight="700">(FP)</text>
+        <text x="548" y="211" font-size="10.5" font-weight="700">hit</text>
+      </g>
+      <text x="716" y="200" font-size="12.5" font-weight="700" fill="#0b0b0b">6 of 8 pruned</text>
+      <text x="716" y="216" font-size="11.5" fill="#52514e">2 &#8216;probably yes&#8217; reads;</text>
+      <text x="716" y="230" font-size="11.5" fill="#52514e">1 is a false positive</text>
+    </g>
+
+    <!-- Row C: PDQ FST — exact -->
+    <g>
+      <text x="24" y="270" font-size="13" font-weight="700" fill="#0b0b0b">PDQ FST sidecar</text>
+      <text x="24" y="286" font-size="11" fill="#52514e">ordered keys, exact</text>
+      <text x="24" y="299" font-size="11" fill="#52514e">row-group set</text>
+      <g>
+        <rect x="200" y="254" width="56" height="44" rx="4" fill="none" stroke="#c3c2b7" stroke-dasharray="3 3"/>
+        <rect x="264" y="254" width="56" height="44" rx="4" fill="none" stroke="#c3c2b7" stroke-dasharray="3 3"/>
+        <rect x="328" y="254" width="56" height="44" rx="4" fill="none" stroke="#c3c2b7" stroke-dasharray="3 3"/>
+        <rect x="392" y="254" width="56" height="44" rx="4" fill="none" stroke="#c3c2b7" stroke-dasharray="3 3"/>
+        <rect x="456" y="254" width="56" height="44" rx="4" fill="none" stroke="#c3c2b7" stroke-dasharray="3 3"/>
+        <rect x="520" y="254" width="56" height="44" rx="4" fill="rgba(12,163,12,0.18)" stroke="#0ca30c" stroke-width="1.5"/>
+        <rect x="584" y="254" width="56" height="44" rx="4" fill="none" stroke="#c3c2b7" stroke-dasharray="3 3"/>
+        <rect x="648" y="254" width="56" height="44" rx="4" fill="none" stroke="#c3c2b7" stroke-dasharray="3 3"/>
+      </g>
+      <g font-size="10" fill="#898781" text-anchor="middle">
+        <text x="228" y="279">pruned</text>
+        <text x="292" y="279">pruned</text>
+        <text x="356" y="279">pruned</text>
+        <text x="420" y="279">pruned</text>
+        <text x="484" y="279">pruned</text>
+        <text x="612" y="279">pruned</text>
+        <text x="676" y="279">pruned</text>
+      </g>
+      <text x="548" y="279" font-size="10.5" font-weight="700" fill="#0b0b0b" text-anchor="middle">hit</text>
+      <text x="716" y="268" font-size="12.5" font-weight="700" fill="#0b0b0b">7 of 8 pruned</text>
+      <text x="716" y="284" font-size="11.5" fill="#52514e">reads exactly 1;</text>
+      <text x="716" y="298" font-size="11.5" fill="#52514e">no false positives</text>
+    </g>
+
+    <text x="24" y="330" font-size="11.5" fill="#898781">Same corpus, same query — the pruning mechanism alone determines how much Parquet is decoded.</text>
+  </g>
+</svg>
