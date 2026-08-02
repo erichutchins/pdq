@@ -28,6 +28,7 @@ Issues = "https://github.com/erichutchins/pdq/issues"
 
 [dependency-groups]
 dev = [
+    "maturin>=1.9.4,<2.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.12.1",
