@@ -6,7 +6,8 @@
     "ghcr.io/devcontainers-extra/features/ruff:1": {},
     "ghcr.io/devcontainers-extra/features/uv:1": {},
     "ghcr.io/devcontainers/features/sshd:1": {},
-    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {},
+    "ghcr.io/devcontainers/features/node:1": {},
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
   },
   "mounts": [
     "source=pdq-cargo-registry,target=/usr/local/cargo/registry,type=volume",
@@ -22,6 +23,7 @@
         "charliermarsh.ruff",
         "tamasfe.even-better-toml",
         "GitHub.copilot",
+        "anthropic.claude-code",
       ],
       "settings": {
         "python.defaultInterpreterPath": "${workspaceRoot}/.venv/bin/python",
