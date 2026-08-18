@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "Eric Hutchins", email = "REDACTED" }]
+authors = [{ name = "Eric Hutchins", email = "erichutchins@users.noreply.github.com" }]
 keywords = ["parquet", "fst", "datafusion", "search", "index", "arrow"]
 classifiers = [
     "Programming Language :: Rust",
@@ -59,6 +59,16 @@ features = ["pyo3/extension-module"]
 include = [
     { path = "Cargo.lock", format = "sdist" },
     { path = "Cargo.toml", format = "sdist" },
+]
+# Repo-only material that is dead weight in the published tarball: benchmark
+# assets (PNGs, raw EC2 logs), agent planning docs, and CI/devcontainer config.
+# CLAUDE.md and docs/*.svg stay — the latter are the README's diagrams.
+# Wheels never carried any of this; these apply to the sdist only.
+exclude = [
+    { path = "misc/shootout/**/*", format = "sdist" },
+    { path = "docs/superpowers/**/*", format = "sdist" },
+    { path = ".devcontainer/**/*", format = "sdist" },
+    { path = ".github/**/*", format = "sdist" },
 ]
 locked = true
 manifest-path = "Cargo.toml"
