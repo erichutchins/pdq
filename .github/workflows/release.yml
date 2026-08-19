@@ -25,8 +25,14 @@ jobs:
         platform:
           - { runner: ubuntu-latest, target: x86_64, manylinux: auto }
           - { runner: ubuntu-latest, target: aarch64, manylinux: auto }
-          - { runner: macos-13, target: x86_64, manylinux: "" }
-          - { runner: macos-14, target: aarch64, manylinux: "" }
+          # Both macOS wheels build on one current arm64 runner: macos-13 was
+          # retired 2025-12-04 (jobs queue forever against a pool that no longer
+          # exists, they don't fail fast) and macos-14 is already deprecated.
+          # The x86_64 wheel cross-compiles - maturin-action installs the
+          # x86_64-apple-darwin target - which avoids the Intel-only labels
+          # (macos-*-intel / -large), some of which are billed larger runners.
+          - { runner: macos-latest, target: x86_64, manylinux: "" }
+          - { runner: macos-latest, target: aarch64, manylinux: "" }
           - { runner: windows-latest, target: x64, manylinux: "" }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
