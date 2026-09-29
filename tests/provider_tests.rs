@@ -429,10 +429,50 @@ async fn test_scan_returns_empty_for_no_match() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-/// The cached Parquet reader factory must parse each matched file's footer at
-/// most once across repeated queries: later queries reuse the cached
-/// `ParquetMetaData` instead of re-reading the footer. This is the warm-path
-/// optimization adapted from DataFusion's `parquet_advanced_index` example.
+/// Write a 3-row-group file (10 rows each). Row group 1 holds `"needle"` when
+/// `has_needle`; every other row holds `filler`. Ids start at `id_offset`.
+fn write_needle_file(
+    path: &Path,
+    has_needle: bool,
+    id_offset: i32,
+    filler: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("value", DataType::Utf8, false),
+    ]));
+    let props = WriterProperties::builder()
+        .set_max_row_group_row_count(Some(10))
+        .build();
+    let mut writer = datafusion::parquet::arrow::ArrowWriter::try_new(
+        File::create(path)?,
+        schema.clone(),
+        Some(props),
+    )?;
+    for rg in 0..3usize {
+        let label = if has_needle && rg == 1 {
+            "needle"
+        } else {
+            filler
+        };
+        let start = id_offset + (rg * 10) as i32;
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(start..(start + 10))),
+                Arc::new(StringArray::from(vec![label; 10])),
+            ],
+        )?;
+        writer.write(&batch)?;
+        writer.flush()?;
+    }
+    writer.close()?;
+    Ok(())
+}
+
+/// Parquet metadata must be parsed at most once per matched file across
+/// repeated queries on one `SessionContext`: later queries are served from the
+/// runtime's file metadata cache instead of re-reading the footer.
 #[tokio::test]
 async fn test_metadata_cache_parses_each_footer_once() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = TempDir::new()?;
@@ -443,39 +483,8 @@ async fn test_metadata_cache_parses_each_footer_once() -> Result<(), Box<dyn std
 
     // Two files; "needle" lives in exactly one row group of exactly one file,
     // so a `value = 'needle'` query prunes down to a single matched file.
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new("value", DataType::Utf8, false),
-    ]));
-    for (file_idx, has_needle) in [true, false].iter().enumerate() {
-        let path = data_dir.join(format!("f{file_idx}.parquet"));
-        let props = WriterProperties::builder()
-            .set_max_row_group_row_count(Some(10))
-            .build();
-        let mut writer = datafusion::parquet::arrow::ArrowWriter::try_new(
-            File::create(&path)?,
-            schema.clone(),
-            Some(props),
-        )?;
-        for rg in 0..3usize {
-            let label = if *has_needle && rg == 1 {
-                "needle"
-            } else {
-                "haystack"
-            };
-            let start = (rg * 10) as i32;
-            let batch = RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(Int32Array::from_iter_values(start..(start + 10))),
-                    Arc::new(StringArray::from(vec![label; 10])),
-                ],
-            )?;
-            writer.write(&batch)?;
-            writer.flush()?;
-        }
-        writer.close()?;
-    }
+    write_needle_file(&data_dir.join("f0.parquet"), true, 0, "haystack")?;
+    write_needle_file(&data_dir.join("f1.parquet"), false, 0, "haystack")?;
 
     create_test_index(&index_dir, &data_dir, "value")?;
 
@@ -487,9 +496,9 @@ async fn test_metadata_cache_parses_each_footer_once() -> Result<(), Box<dyn std
             .await?,
     );
     let ctx = SessionContext::new();
-    ctx.register_table("t", provider.clone())?;
+    ctx.register_table("t", provider)?;
 
-    // Run the same selective query several times against the long-lived provider.
+    // Run the same selective query several times against the long-lived context.
     for _ in 0..3 {
         let df = ctx
             .sql("SELECT count(*) FROM t WHERE value = 'needle'")
@@ -497,15 +506,70 @@ async fn test_metadata_cache_parses_each_footer_once() -> Result<(), Box<dyn std
         let _ = df.collect().await?;
     }
 
-    let (hits, misses) = provider.metadata_cache_stats();
+    let entries = ctx
+        .runtime_env()
+        .cache_manager
+        .get_file_metadata_cache()
+        .list_entries();
     assert_eq!(
-        misses, 1,
-        "footer parsed exactly once for the single matched file across 3 queries \
-         (got {misses} parses, {hits} hits)"
+        entries.len(),
+        1,
+        "only the single matched file's metadata should be cached: {entries:?}"
     );
+    let hits = entries.values().next().unwrap().hits;
     assert!(
-        hits >= 1,
-        "later queries must reuse cached metadata (hits={hits})"
+        hits >= 2,
+        "queries after the first must reuse the cached metadata (hits={hits})"
+    );
+
+    Ok(())
+}
+
+/// A file rewritten in place after being cached must be re-read, not served
+/// from its stale footer: the cache validates entries against size + mtime.
+#[tokio::test]
+async fn test_metadata_cache_invalidated_when_file_rewritten()
+-> Result<(), Box<dyn std::error::Error>> {
+    let tmp = TempDir::new()?;
+    let data_dir = tmp.path().join("data");
+    let index_dir = tmp.path().join("index");
+    std::fs::create_dir_all(&data_dir)?;
+    std::fs::create_dir_all(&index_dir)?;
+
+    let path = data_dir.join("f0.parquet");
+    write_needle_file(&path, true, 0, "haystack")?;
+    create_test_index(&index_dir, &data_dir, "value")?;
+
+    let provider = Arc::new(
+        PdqTableProviderBuilder::new()
+            .with_index_dir(&index_dir)
+            .with_data_dir(&data_dir)
+            .build()
+            .await?,
+    );
+    let ctx = SessionContext::new();
+    ctx.register_table("t", provider)?;
+
+    let sql = "SELECT min(id) AS min_id FROM t WHERE value = 'needle'";
+    let min_id = |batches: &[RecordBatch]| {
+        batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap()
+            .value(0)
+    };
+
+    assert_eq!(min_id(&ctx.sql(sql).await?.collect().await?), 10);
+
+    // Same row-group layout (so the index stays valid) but different ids and a
+    // longer filler, which moves every byte offset in the file.
+    write_needle_file(&path, true, 1000, "a-much-longer-haystack-value")?;
+
+    assert_eq!(
+        min_id(&ctx.sql(sql).await?.collect().await?),
+        1010,
+        "rewritten file must be read with its new footer, not the cached one"
     );
 
     Ok(())

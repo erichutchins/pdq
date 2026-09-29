@@ -298,9 +298,12 @@ performs **no Parquet footer I/O**.
 On top of the stock `ParquetSource`, the provider wires in two DataFusion 54 features (adapted
 from its `parquet_advanced_index` example) that matter for a long-lived, high-QPS service:
 
-- **Cached Parquet metadata**: a `ParquetFileReaderFactory` serves `ParquetMetaData` from a
-  process-lifetime cache, so each matched file's footer is parsed at most once for the engine's
-  lifetime. A footer size hint lets the first (cold) read fetch the footer in one shot.
+- **Cached Parquet metadata**: DataFusion's `CachedParquetFileReaderFactory` serves
+  `ParquetMetaData` (footer + page index) from the session runtime's file metadata cache, so a
+  long-lived `SessionContext` parses each matched file's footer at most once. Entries are
+  validated against the file's size and mtime, so a file rewritten in place is re-read. The
+  cache is LRU-bounded by `RuntimeEnv`'s metadata cache limit (DataFusion default 50 MB). A
+  footer size hint lets the first (cold) read fetch the footer in one shot.
 - **Row-filter pushdown**: `with_pushdown_filters(true)` applies the equality predicate as a
   row filter _during_ decode (late materialization). On an unsorted corpus, min/max zonemaps
   can't prune within a row group, so without this the whole matched row group is decoded and a
